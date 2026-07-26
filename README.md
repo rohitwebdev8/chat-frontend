@@ -1,56 +1,125 @@
-# Welcome to your Expo app 👋
+# 💬 PulseChat — Real-Time Chat & Voice Messaging Mobile App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+<p align="center">
+  <img src="./assets/images/splash-icon.png" width="140" alt="PulseChat Logo" />
+</p>
 
-## Get started
+A modern, high-performance real-time chat and voice messaging mobile application built with **React Native**, **Expo SDK 57**, **TypeScript**, **Redux Toolkit**, **Firebase Firestore/Storage**, **expo-audio**, and **Expo Push Notifications**.
 
-1. Install dependencies
+---
 
-   ```bash
-   npm install
-   ```
+## ✨ Features
 
-2. Start the app
+- ⚡ **Native Splash Screen & Entrance**: Smooth entrance animations using `expo-splash-screen` and native async state initialization.
+- 👤 **User Onboarding & Persistence**: Name input validation (minimum 3 characters, Indian name placeholders) backed by `AsyncStorage` and `Redux`.
+- 💬 **Real-time Multi-Room Messaging**: Subscribes to Firebase Firestore `onSnapshot` listeners for `General`, `Random`, and `Dev` channels.
+- 🎙️ **Voice Note Recording & Playback**: High-quality audio recording via `expo-audio`, Firebase Storage uploads, and custom audio player bubbles with instant replay/seek support.
+- 🔔 **Push Notifications**: Integrated with Expo Push Service and deployed Express backend server for automatic cross-device push notifications with deep-link room routing.
+- 🚀 **Virtualized List Performance**: Virtualized `FlatList` layout optimizations (`getItemLayout`, `keyExtractor`, memoized components) for smooth 60fps performance.
+- 🛠️ **Floating Draggable Network Debugger**: Real-time network request/response inspector modal accessible via a floating draggable button on all screens.
 
-   ```bash
-   npx expo start
-   ```
+---
 
-In the output, you'll find options to open the app in a
+## 🛠️ Technology Stack
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+- **Framework**: React Native (`0.86.0`), Expo SDK (`~57.0.8`)
+- **Navigation**: Expo Router (`~57.0.8`)
+- **State Management**: Redux Toolkit (`^2.12.0`), React Redux (`^9.3.0`)
+- **Backend & Database**: Firebase Firestore (`^12.16.0`), Firebase Storage
+- **Audio Engine**: `expo-audio` (`~57.0.3`)
+- **Notifications**: `expo-notifications` (`~57.0.7`), `expo-device` (`~57.0.1`)
+- **Styling**: Vanilla React Native StyleSheet with custom Design System Tokens (`theme.ts`)
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+---
 
-## Get a fresh project
+## 📁 Project Structure
 
-When you're ready, run:
-
-```bash
-npm run reset-project
+```text
+chatFrontend/
+├── assets/                  # App icon, splash screen, and graphic assets
+│   ├── images/
+│   │   ├── icon.png
+│   │   ├── android-icon-foreground.png
+│   │   └── splash-icon.png
+├── src/
+│   ├── app/                 # Expo Router navigation routes
+│   │   ├── _layout.tsx      # Root provider wrapper & global notification setup
+│   │   ├── index.tsx        # Splash entrance & auth routing check
+│   │   ├── name.tsx         # User onboarding screen route
+│   │   ├── rooms.tsx        # Chat channels screen route
+│   │   └── chat/[id].tsx    # Active room messaging route
+│   ├── components/          # Shared components (ScreenWrapper, Debugger, Skeletons)
+│   │   ├── FloatingDebugButton.tsx
+│   │   ├── NetworkDebuggerModal.tsx
+│   │   └── ScreenWrapper.tsx
+│   ├── constants/           # Design system tokens (colors, typography, spacing)
+│   │   └── theme/
+│   ├── screens/             # Feature screen containers & components
+│   │   ├── Chat/            # Message list, voice bubbles, recorder hooks
+│   │   ├── Name/            # Name form & 3-character validation logic
+│   │   └── Rooms/           # Virtualized room list & header user badge
+│   ├── services/            # Infrastructure services
+│   │   ├── api/             # Network monitor & backend API client
+│   │   ├── firebase/        # Firestore queries & Storage upload handlers
+│   │   └── notifications/   # Expo push token registration & listener setup
+│   ├── store/               # Redux store slices (user, chat)
+│   └── utils/               # Helper utilities (sender colors, time formatters)
+├── app.json                 # Expo configuration & notification plugins
+├── package.json
+└── tsconfig.json
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+---
 
-### Other setup steps
+## 🚀 Getting Started
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+### Prerequisites
 
-## Learn more
+- Node.js (v18 or higher)
+- npm or yarn
+- Expo Go app on your physical iOS/Android device (or Android Studio / Xcode simulator)
 
-To learn more about developing your project with Expo, look at the following resources:
+### 1. Installation
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Clone the repository and install frontend dependencies:
 
-## Join the community
+```bash
+cd chatFrontend
+npm install
+```
 
-Join our community of developers creating universal apps.
+### 2. Environment Setup
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Create a `.env` file in the root of `chatFrontend`:
+
+```env
+EXPO_PUBLIC_API_URL=https://chat-backend-r2cp.onrender.com
+```
+
+### 3. Start Development Server
+
+Run the Expo development server:
+
+```bash
+npx expo start
+```
+
+Press `a` for Android Emulator, `i` for iOS Simulator, or scan the QR code using Expo Go on a physical device.
+
+---
+
+## 🔔 Push Notification Architecture
+
+1. **Token Registration**: On app start, `registerForPushNotifications()` obtains the device's `ExponentPushToken[...]` and registers it with the Node.js backend (`POST /api/notifications/register`).
+2. **Triggering**: When a user sends a message, `triggerPushNotification()` notifies the backend (`POST /api/notifications/send`).
+3. **Dispatch**: The backend filters out the sender's token and sends push notifications to all room participants via Expo Push API.
+4. **Deep-Link Navigation**: Tapping a notification automatically routes the user directly to `/chat/[roomId]`.
+
+---
+
+## 📜 Scripts
+
+- `npm run start` - Starts the Expo Metro bundler.
+- `npm run lint` - Runs ESLint validation across all TypeScript files.
+- `npm run android` - Runs native Android build.
+- `npm run ios` - Runs native iOS build.

@@ -1,18 +1,44 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
+import React, { useEffect } from 'react';
+import { Provider } from 'react-redux';
+import { Slot } from 'expo-router';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+import { store } from '../store';
+import { initNotifications } from '../services/notifications/pushService';
+import { FloatingDebugButton } from '../components';
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
+// Prevent splash screen from auto-hiding before state initialization is complete
+SplashScreen.preventAutoHideAsync().catch(() => {
+  /* ignore error if already prevented or not supported */
+});
 
-SplashScreen.preventAutoHideAsync();
+export default function RootLayout() {
+  useEffect(() => {
+    let cleanupFn: (() => void) | undefined;
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+    initNotifications()
+      .then((cleanup) => {
+        cleanupFn = cleanup;
+      })
+      .catch((error) => {
+        console.error('Failed to initialize notifications:', error);
+      });
+
+    return () => {
+      cleanupFn?.();
+    };
+  }, []);
+
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
-    </ThemeProvider>
+    <Provider store={store}>
+      <SafeAreaProvider>
+        <StatusBar style="dark" />
+        <Slot />
+        <FloatingDebugButton />
+      </SafeAreaProvider>
+    </Provider>
   );
 }
+
+
