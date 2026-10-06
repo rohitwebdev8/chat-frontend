@@ -1,7 +1,6 @@
-import React from 'react';
-import RoomsScreen from '../screens/Rooms';
+import { Redirect } from 'expo-router';
 
+/** Legacy route — redirect to dashboard. */
 export default function RoomsRoute() {
-  return <RoomsScreen />;
+  return <Redirect href="/dashboard" />;
 }
-

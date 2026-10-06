@@ -1,7 +1,6 @@
-import React from 'react';
-import NameScreen from '../screens/Name';
+import { Redirect } from 'expo-router';
 
+/** Legacy route — redirect to dashboard. */
 export default function NameRoute() {
-  return <NameScreen />;
+  return <Redirect href="/dashboard" />;
 }
-

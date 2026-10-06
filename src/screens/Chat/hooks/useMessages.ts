@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  resetRoomUnreadCount,
   sendTextMessage,
   sendVoiceMessage,
   subscribeToRoomMessages,
@@ -75,7 +76,8 @@ export function useMessages(
 
   // ─── Real-time subscription ─────────────────────────────────────────────────
   useEffect(() => {
-
+    // Reset unread count when opening the room
+    resetRoomUnreadCount(roomId);
 
     const unsubscribe = subscribeToRoomMessages(roomId, (firestoreMessages) => {
       const mapped: UIMessage[] = firestoreMessages.map((msg) =>

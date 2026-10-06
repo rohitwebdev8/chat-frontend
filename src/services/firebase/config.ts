@@ -1,18 +1,21 @@
+/**
+ * Firebase config — Expo / React Native (JS SDK, modular).
+ * Auth is handled locally (AsyncStorage + UUID) — no Firebase Auth SDK needed.
+ * Firestore: memoryLocalCache for React Native, persistentLocalCache for web.
+ */
+
+import { Platform } from 'react-native';
 import { FirebaseApp, getApps, initializeApp } from 'firebase/app';
-import { Firestore, getFirestore } from 'firebase/firestore';
+import {
+  Firestore,
+  initializeFirestore,
+  getFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  memoryLocalCache,
+} from 'firebase/firestore';
 import { FirebaseStorage, getStorage } from 'firebase/storage';
 
-/**
- * Credentials sourced from google-services.json:
- *   apiKey            → client[0].api_key[0].current_key
- *   appId             → client[0].client_info.mobilesdk_app_id
- *   projectId         → project_info.project_id
- *   storageBucket     → project_info.storage_bucket
- *   messagingSenderId → project_info.project_number
- *
- * authDomain is not present in google-services.json.
- * It follows the pattern: <projectId>.firebaseapp.com
- */
 const firebaseConfig = {
   apiKey: 'AIzaSyDojuRWDgrppTLW2XsvVOouSfE3c9lXLW8',
   appId: '1:767613699062:android:793598e2bfd842e75bbdd7',
@@ -22,17 +25,24 @@ const firebaseConfig = {
   authDomain: 'curomates-chat-app.firebaseapp.com',
 };
 
-/**
- * Initialise Firebase only once.
- *
- * Expo Fast Refresh re-executes module code on every save.
- * Checking getApps().length prevents the
- * "Firebase App named '[DEFAULT]' already exists" error.
- */
+// ── App singleton ──────────────────────────────────────────────────────────────
 const app: FirebaseApp =
   getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 
-const db: Firestore = getFirestore(app);
+// ── Firestore with platform-appropriate cache ──────────────────────────────────
+let db: Firestore;
+try {
+  const localCache =
+    Platform.OS === 'web'
+      ? persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+      : memoryLocalCache();
+
+  db = initializeFirestore(app, { localCache });
+} catch {
+  // Already initialized (Fast Refresh)
+  db = getFirestore(app);
+}
+
 const storage: FirebaseStorage = getStorage(app);
 
 export { app, db, storage };

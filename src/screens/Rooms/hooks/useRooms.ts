@@ -8,6 +8,7 @@ export interface UIRoom {
   latestSender: string;
   latestMessage: string;
   time: string;
+  unreadCount: number;
 }
 
 interface UseRoomsResult {
@@ -32,6 +33,7 @@ export function useRooms(): UseRoomsResult {
           latestSender: room.lastSender,
           latestMessage: room.lastMessage,
           time: formatTimestamp(room.lastMessageAt),
+          unreadCount: room.unreadCount ?? 0,
         }));
         setRooms(mapped);
         setLoading(false);

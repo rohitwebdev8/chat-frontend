@@ -4,6 +4,7 @@ import {
   doc,
   DocumentData,
   getDocs,
+  increment,
   onSnapshot,
   orderBy,
   query,
@@ -23,6 +24,7 @@ export interface Room {
   lastMessage: string;
   lastSender: string;
   lastMessageAt: Timestamp | null;
+  unreadCount?: number;
 }
 
 export type MessageType = 'text' | 'voice';
@@ -53,10 +55,11 @@ export interface LastMessagePayload {
 function documentToRoom(id: string, data: DocumentData): Room {
   return {
     id,
-    name: data.name ?? '',
+    name: data.name || id,
     lastMessage: data.lastMessage ?? '',
     lastSender: data.lastSender ?? '',
     lastMessageAt: data.lastMessageAt ?? null,
+    unreadCount: typeof data.unreadCount === 'number' ? data.unreadCount : 0,
   };
 }
 
@@ -129,17 +132,21 @@ export function subscribeToRooms(
   onChange: (rooms: Room[]) => void,
   onError?: (error: Error) => void,
 ): Unsubscribe {
-  const roomsQuery = query(
-    collection(db, 'rooms'),
-    orderBy('lastMessageAt', 'desc'),
-  );
+  const roomsRef = collection(db, 'rooms');
 
   return onSnapshot(
-    roomsQuery,
+    roomsRef,
     (snapshot: QuerySnapshot) => {
       const rooms = snapshot.docs.map((docSnap) =>
         documentToRoom(docSnap.id, docSnap.data()),
       );
+
+      rooms.sort((a, b) => {
+        const timeA = a.lastMessageAt?.toMillis ? a.lastMessageAt.toMillis() : 0;
+        const timeB = b.lastMessageAt?.toMillis ? b.lastMessageAt.toMillis() : 0;
+        return timeB - timeA;
+      });
+
       onChange(rooms);
     },
     onError,
@@ -214,5 +221,23 @@ export async function updateRoomLastMessage(
     lastMessage,
     lastSender,
     lastMessageAt: serverTimestamp(),
-  } satisfies Omit<LastMessagePayload, 'lastMessageAt'> & { lastMessageAt: ReturnType<typeof serverTimestamp> });
+    unreadCount: increment(1),
+  });
+}
+
+/**
+ * Resets the unread message count for a room back to 0.
+ *
+ * Call this when a user opens a chat room.
+ *
+ * @param roomId - Firestore document ID of the room.
+ */
+export async function resetRoomUnreadCount(roomId: string): Promise<void> {
+  try {
+    await updateDoc(doc(db, 'rooms', roomId), {
+      unreadCount: 0,
+    });
+  } catch (err) {
+    console.warn(`[resetRoomUnreadCount] Could not reset unreadCount for room ${roomId}:`, err);
+  }
 }

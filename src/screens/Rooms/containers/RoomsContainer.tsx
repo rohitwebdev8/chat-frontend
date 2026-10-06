@@ -9,12 +9,15 @@ import { setActiveRoom } from '../../../store/slices/chatSlice';
 import { RootState } from '../../../store';
 import theme from '../../../constants/theme';
 
+import { resetRoomUnreadCount } from '@/services/firebase';
+
 export const RoomsContainer = () => {
   const dispatch = useDispatch();
   const userName = useSelector((state: RootState) => state.user.name);
   const { rooms, loading, error, refresh } = useRooms();
 
   const handleSelectRoom = useCallback((roomId: string) => {
+    resetRoomUnreadCount(roomId);
     dispatch(setActiveRoom(roomId));
     router.push(`/chat/${roomId}`);
   }, [dispatch]);
@@ -45,6 +48,7 @@ export const RoomsContainer = () => {
       userName={userName}
       onSelectRoom={handleSelectRoom}
       onReset={handleReset}
+      onRefresh={refresh}
       loading={loading}
     />
   );

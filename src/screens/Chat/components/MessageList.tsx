@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,8 @@ import theme from '../../../constants/theme';
 import { VoiceMessageBubble } from './VoiceMessageBubble';
 import { MessageListSkeleton } from './MessageListSkeleton';
 import { getSenderColor } from '../../../utils/senderColor';
+import { DailyTrackerModal } from '@/components/DailyTrackerModal';
+
 
 interface MicIconProps {
   size?: number;
@@ -133,6 +135,7 @@ export const MessageList: React.FC<Props> = ({
 }) => {
   const scrollRef = useRef<ScrollView>(null);
   const insets = useSafeAreaInsets();
+  const [isTrackerOpen, setIsTrackerOpen] = useState(false);
 
   // Auto-scroll to bottom when messages update or keyboard opens.
   useEffect(() => {
@@ -197,6 +200,8 @@ export const MessageList: React.FC<Props> = ({
 
           <View style={styles.headerRightSpacer} />
         </View>
+
+
 
         {/* ── Messages Area or Skeleton ── */}
         {loading ? (
@@ -354,6 +359,14 @@ export const MessageList: React.FC<Props> = ({
         </View>
 
       </KeyboardAvoidingView>
+
+      <DailyTrackerModal
+        visible={isTrackerOpen}
+        onClose={() => setIsTrackerOpen(false)}
+        onShareToChat={(formattedText) => {
+          onChangeText(formattedText);
+        }}
+      />
     </View>
   );
 };
@@ -411,6 +424,20 @@ const styles = StyleSheet.create({
   headerRightSpacer: {
     width: 40,
   },
+  trackerHeaderBtn: {
+    backgroundColor: theme.colors.primarySoft,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  trackerHeaderBtnText: {
+    color: theme.colors.primary,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+
 
   // Messages
   messageList: {

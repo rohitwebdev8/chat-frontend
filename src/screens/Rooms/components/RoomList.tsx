@@ -1,16 +1,20 @@
-import React, { memo, useCallback } from 'react';
+import React, { memo, useCallback, useMemo, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   FlatList,
+  TextInput,
+  RefreshControl,
   ListRenderItemInfo,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 import theme from '../../../constants/theme';
 import { getSenderColor } from '../../../utils/senderColor';
 import { RoomListSkeleton } from './RoomListSkeleton';
+
 
 interface Room {
   id: string;
@@ -18,6 +22,7 @@ interface Room {
   latestSender: string;
   latestMessage: string;
   time: string;
+  unreadCount?: number;
 }
 
 interface Props {
@@ -25,6 +30,7 @@ interface Props {
   userName?: string | null;
   onSelectRoom: (id: string) => void;
   onReset: () => void;
+  onRefresh?: () => void;
   loading?: boolean;
 }
 
@@ -86,8 +92,8 @@ const RoomCard: React.FC<RoomCardProps> = memo(({ room, onPress }) => {
   const handlePress = () => onPress(room.id);
 
   return (
-    <TouchableOpacity 
-      style={styles.card} 
+    <TouchableOpacity
+      style={styles.card}
       onPress={handlePress}
       activeOpacity={0.7}
       accessibilityRole="button"
@@ -105,7 +111,16 @@ const RoomCard: React.FC<RoomCardProps> = memo(({ room, onPress }) => {
                 {room.name}
               </Text>
             </View>
-            {room.time ? <Text style={styles.time}>{room.time}</Text> : null}
+            <View style={styles.headerRightInfo}>
+              {room.time ? <Text style={styles.time}>{room.time}</Text> : null}
+              {Boolean(room.unreadCount && room.unreadCount > 0) && (
+                <View style={styles.unreadBadge}>
+                  <Text style={styles.unreadBadgeText}>
+                    {room.unreadCount! > 99 ? '99+' : room.unreadCount}
+                  </Text>
+                </View>
+              )}
+            </View>
           </View>
 
           <Text style={styles.subtext}>{identity.subtitle}</Text>
@@ -137,9 +152,34 @@ export const RoomList: React.FC<Props> = memo(({
   userName,
   onSelectRoom,
   onReset,
+  onRefresh,
   loading,
 }) => {
   const insets = useSafeAreaInsets();
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = useCallback(async () => {
+    if (!onRefresh) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setTimeout(() => setRefreshing(false), 500);
+    }
+  }, [onRefresh]);
+
+  const filteredRooms = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return rooms;
+    return rooms.filter(
+      (room) =>
+        room.name.toLowerCase().includes(q) ||
+        room.latestMessage.toLowerCase().includes(q) ||
+        room.latestSender.toLowerCase().includes(q)
+    );
+  }, [rooms, searchQuery]);
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<Room>) => (
@@ -167,12 +207,22 @@ export const RoomList: React.FC<Props> = memo(({
           <View style={styles.titleWithBadge}>
             <Text style={styles.headerTitle}>Chat Rooms</Text>
             <View style={styles.roomCountBadge}>
-              <Text style={styles.roomCountText}>{rooms.length}</Text>
+              <Text style={styles.roomCountText}>{filteredRooms.length}</Text>
             </View>
           </View>
         </View>
 
         <View style={styles.headerRight}>
+          <TouchableOpacity
+            onPress={() => router.push('/dashboard')}
+            style={styles.dashboardBadge}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Open Dashboard"
+          >
+            <Text style={styles.dashboardBadgeText}>📊 Dashboard</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity
             onPress={onReset}
             style={styles.userBadge}
@@ -187,13 +237,36 @@ export const RoomList: React.FC<Props> = memo(({
             <Text style={styles.switchPillText}>Switch</Text>
           </TouchableOpacity>
         </View>
+
+      </View>
+
+      <View style={styles.searchBarContainer}>
+        <Text style={styles.searchIcon}>🔍</Text>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search rooms or messages..."
+          placeholderTextColor={theme.colors.textSecondary}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {searchQuery ? (
+          <TouchableOpacity
+            onPress={() => setSearchQuery('')}
+            style={styles.clearSearchButton}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={styles.clearSearchText}>✕</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {loading ? (
         <RoomListSkeleton />
       ) : (
         <FlatList
-          data={rooms}
+          data={filteredRooms}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
           getItemLayout={getItemLayout}
@@ -202,12 +275,26 @@ export const RoomList: React.FC<Props> = memo(({
             { paddingBottom: Math.max(insets.bottom + 80, 100) },
           ]}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            onRefresh ? (
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                colors={[theme.colors.primary]}
+                tintColor={theme.colors.primary}
+              />
+            ) : undefined
+          }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Text style={styles.emptyIcon}>💬</Text>
-              <Text style={styles.emptyTitle}>No Rooms Available</Text>
+              <Text style={styles.emptyIcon}>{searchQuery ? '🔍' : '💬'}</Text>
+              <Text style={styles.emptyTitle}>
+                {searchQuery ? 'No Matching Rooms' : 'No Rooms Available'}
+              </Text>
               <Text style={styles.emptySubtitle}>
-                Rooms will appear here automatically when created.
+                {searchQuery
+                  ? `No rooms found matching "${searchQuery}".`
+                  : 'Rooms will appear here automatically when created.'}
               </Text>
             </View>
           }
@@ -270,7 +357,53 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surface,
+    marginHorizontal: theme.spacing.md,
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.md,
+    height: 44,
+    borderRadius: theme.borders.radiusMd,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    ...theme.shadows.soft,
+  },
+  searchIcon: {
+    fontSize: 16,
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    height: '100%',
+    fontSize: 14,
+    color: theme.colors.text,
+  },
+  clearSearchButton: {
+    padding: 4,
+    marginLeft: 6,
+  },
+  clearSearchText: {
+    fontSize: 14,
+    color: theme.colors.textSecondary,
+    fontWeight: '600',
+  },
+  dashboardBadge: {
+    backgroundColor: '#007AFF',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: theme.borders.radiusLg,
+    marginRight: 8,
+  },
+  dashboardBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   userBadge: {
+
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: theme.colors.surfaceSecondary,
@@ -351,6 +484,24 @@ const styles = StyleSheet.create({
   time: {
     ...theme.typography.caption,
     color: theme.colors.textSecondary,
+  },
+  headerRightInfo: {
+    alignItems: 'flex-end',
+  },
+  unreadBadge: {
+    backgroundColor: '#EF4444',
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    marginTop: 4,
+  },
+  unreadBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
   },
   subtext: {
     ...theme.typography.caption,

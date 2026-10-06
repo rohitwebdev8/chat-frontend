@@ -44,3 +44,5 @@ example
 # firebase service account key
 *-firebase-adminsdk-*.json
 
+# scratch
+scratch/

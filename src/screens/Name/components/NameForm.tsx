@@ -34,11 +34,11 @@ export const NameForm: React.FC<Props> = React.memo(({
 
   return (
     <ScreenWrapper style={styles.container}>
-      <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardContainer}
       >
-        <ScrollView 
+        <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
@@ -51,7 +51,7 @@ export const NameForm: React.FC<Props> = React.memo(({
               <Text style={styles.title}>Welcome to ChatApp</Text>
               <Text style={styles.subtitle}>Enter your display name to start communicating in rooms.</Text>
             </View>
-            
+
             <View style={styles.inputContainer}>
               <View style={styles.labelRow}>
                 <Text style={styles.label}>Display Name</Text>
@@ -59,14 +59,14 @@ export const NameForm: React.FC<Props> = React.memo(({
                   {trimmedLength} / 3 min chars
                 </Text>
               </View>
-              <TextInput 
+              <TextInput
                 style={[
                   styles.input,
                   showError && styles.inputError,
                   isValid && styles.inputValid,
                 ]}
-                value={name} 
-                onChangeText={onChangeName} 
+                value={name}
+                onChangeText={onChangeName}
                 placeholder="e.g. Rahul Sharma"
                 placeholderTextColor={theme.colors.textSecondary}
                 autoFocus
@@ -81,8 +81,8 @@ export const NameForm: React.FC<Props> = React.memo(({
               )}
             </View>
 
-            <TouchableOpacity 
-              style={[styles.button, (!isValid || isSubmitting) && styles.buttonDisabled]} 
+            <TouchableOpacity
+              style={[styles.button, (!isValid || isSubmitting) && styles.buttonDisabled]}
               onPress={onContinue}
               disabled={!isValid || isSubmitting}
               activeOpacity={0.8}
