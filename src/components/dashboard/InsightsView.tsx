@@ -56,13 +56,13 @@ export const InsightsView: React.FC<Props> = ({
                 <Text style={styles.lackingTitle}>{goal.title}</Text>
                 <View style={[styles.statusBadge, { backgroundColor: `${progress.statusColor}20` }]}>
                   <Text style={[styles.statusText, { color: progress.statusColor }]}>
-                    {progress.statusLabel} ({progress.percentComplete}%)
+                    {progress.statusLabel || progress.status} ({progress.percentComplete ?? progress.valuePct}%)
                   </Text>
                 </View>
               </View>
-              <Text style={styles.lackingInsight}>{progress.insightText}</Text>
+              <Text style={styles.lackingInsight}>{progress.insightText || progress.message}</Text>
               <View style={styles.lackingTrack}>
-                <View style={[styles.lackingFill, { width: `${progress.percentComplete}%`, backgroundColor: progress.statusColor }]} />
+                <View style={[styles.lackingFill, { width: `${progress.percentComplete ?? progress.valuePct}%`, backgroundColor: progress.statusColor }]} />
               </View>
             </View>
           ))

@@ -23,8 +23,8 @@ export interface Reminder {
   linkedMetric?: string;
   linkedTaskId?: string;
 
-  /** Links to a task — optional. If set, "Done" action marks that task complete. */
-  taskId: string | null;
+  /** Links to a task (standalone or goal task). */
+  taskId?: string | null;
 
   scheduleType: ScheduleType;
   fixedTimes?: string[];          // HH:mm, for daily-fixed / weekdays / weekly
@@ -35,7 +35,11 @@ export interface Reminder {
   oneTimeDateTime?: string;       // ISO, for one-time
 
   enabled: boolean;
-  snoozeDurationMinutes: number;  // default 60
+  snoozeDurationMinutes?: number; // default 60
+  soundEnabled?: boolean;
+  priority?: string;
+  allowSecondNudge?: boolean;
+  startDate?: string;
 
   createdAt: string;
   updatedAt: string;

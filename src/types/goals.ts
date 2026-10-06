@@ -1,6 +1,6 @@
 /**
- * goals.ts — Goal model and progress types.
- * Path: users/{uid}/goals/{id}
+ * goals.ts — Goal data model and progress types.
+ * Path: users/{uid}/goals/{goalId}
  */
 
 export type GoalCategory =
@@ -13,67 +13,89 @@ export type GoalCategory =
   | 'Personal'
   | 'Custom';
 
-export type GoalType = 'target' | 'cumulative' | 'habit' | 'recurring';
-export type GoalHorizon = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly';
-export type GoalMetric = string;
-export type LinkedMetric = string;
-export type GoalPriority = 'high' | 'medium' | 'low';
-export type GoalStatus = 'active' | 'paused' | 'completed' | 'abandoned';
-export type PaceStatus = 'Ahead' | 'On track' | 'Behind' | 'No data' | 'Completed';
+export type GoalType = 'reach_number' | 'total' | 'habit' | 'limit' | 'target' | 'cumulative' | 'recurring';
+export type GoalStatus = 'active' | 'paused' | 'done' | 'completed' | 'abandoned';
+export type PaceStatus = 'Ahead' | 'On track' | 'Behind' | 'No data' | 'Completed' | 'Exceeded';
+
+export interface GoalPauseRange {
+  id?: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string;   // YYYY-MM-DD
+  reason?: string;
+  extendDeadline?: boolean;
+}
 
 export interface Goal {
   id: string;
-  title: string;
   category: GoalCategory;
-  type: GoalType | string;        // 'target' | 'cumulative' | 'habit'
-  metricId?: string;              // links to MetricDefinition (e.g. 'weight', 'steps', 'savings')
-  startValue: number;
+  title: string;
+  type: GoalType;
+  unit?: string;
+  startValue?: number;
   targetValue: number;
-  startDate: string;              // YYYY-MM-DD
-  endDate?: string;               // YYYY-MM-DD
-  deadline?: string;              // compatibility alias for endDate
+  startDate: string; // YYYY-MM-DD
+  endDate: string;   // YYYY-MM-DD
   status: GoalStatus;
+  
+  // Off days (0=Sun..6=Sat)
+  offDays?: number[];
+
+  // Pause ranges
+  pauseRanges?: GoalPauseRange[];
 
   // Compatibility fields
-  horizon?: string;
+  metricId?: string;
   linkedMetric?: string;
-  unit?: string;
+  horizon?: string;
   priority?: string;
-  currentValue?: number;
   visionStatement?: string;
   whyItMatters?: string;
+  currentValue?: number;
+  deadline?: string;
 
-  // Optional task linking
-  createDailyTask?: boolean;
-
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface GoalCalculatedProgress {
   goalId: string;
-  current: number;                // current logged value or sum
-  currentValue: number;           // compatibility alias
-  valuePct: number;               // 0..100%
-  percentComplete: number;        // compatibility alias
-  timePct: number;                // 0..100%
-  requiredPerDay: number;         // e.g. 10000 steps/day or -0.17 kg/day
-  actualPace: number;             // average daily rate achieved
-  projected: number;              // projected final value at current pace
-  status: PaceStatus;             // 'Ahead' | 'On track' | 'Behind' | 'No data'
-  statusLabel: PaceStatus;        // compatibility alias
-  statusColor: string;            // hex color for UI
-  message: string;                // formatted summary e.g. "Need 10,000 steps/day · On track"
-  insightText?: string;           // compatibility alias
-  streakCurrent?: number;
-  streakBest?: number;
-  consistencyLast7DaysPct?: number;
+  current: number;
+  currentValue?: number;
+  targetValue: number;
+  startValue: number;
+  valuePct: number;             // 0..100%
+  percentComplete?: number;
+  timePct: number;              // 0..100% (active days basis)
+  requiredPerDay: number;
+  actualPace: number;
+  projected: number;
+  status: PaceStatus;
+  statusLabel?: PaceStatus;
+  statusColor: string;
+  message: string;
+  insightText?: string;
+  isFuture?: boolean;
+  startsInDays?: number;
+  isOffDayToday?: boolean;
+  isPausedToday?: boolean;
+  activeDaysTotal?: number;
+  activeDaysElapsed?: number;
+  activeDaysLeft?: number;
+  paceSuggestion?: {
+    text: string;
+    suggestedAmount: number;
+    taskId?: string;
+  };
+  consistencyLast7DaysPct: number; // 0..100%
+  todayDueCount: number;
+  todayDoneCount: number;
+  streakCurrent: number;
+  streakBest: number;
 }
 
-// ── Firestore: users/{uid}/reviews/{id} ───────────────────────────────────
 export interface WeeklyReview {
-  id: string;          // e.g. "weekly_2026-W40"
-  weekKey?: string;    // "2026-W40"
+  id: string;
+  weekKey?: string;
   periodId?: string;
   periodType?: 'weekly' | 'monthly';
   dateKey?: string;
@@ -84,7 +106,7 @@ export interface WeeklyReview {
   nextWeekFocus?: string;
   nextPeriodFocus?: string;
   overallScore?: number;
-  moodRating?: number;  // 1–5
+  moodRating?: number;
   energyRating?: number;
   createdAt: string;
   updatedAt: string;

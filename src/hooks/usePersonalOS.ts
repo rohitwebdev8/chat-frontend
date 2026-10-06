@@ -1,10 +1,6 @@
 /**
  * usePersonalOS.ts — Central data hook for PACE.
- *
- * Integrates:
- *  - Dynamic Metric Registry (users/{uid}/metrics)
- *  - Unified Goal Calculations (computeGoalProgress)
- *  - Dynamic logs, tasks, reminders, and CSV export
+ * Manages state and realtime sync for Goals, Standalone Tasks, Goal Tasks, Daily Logs, Career Quick Links, and Reminders.
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
@@ -12,75 +8,77 @@ import { useSelector } from 'react-redux';
 import { selectIsSynced } from '@/store/slices/syncSlice';
 
 import { Goal, GoalCalculatedProgress } from '@/types/goals';
-import { Task, isTaskDueOn } from '@/types/tasks';
+import { Task, GoalTask, isTaskDueOn, countTaskCompletionsThisWeek, formatLocalDate } from '@/types/tasks';
 import { DailyLog, createEmptyLog } from '@/types/logs';
+import { QuickLink } from '@/types/links';
 import { Reminder, QuietHours } from '@/types/reminders';
-import { MetricDefinition, DEFAULT_METRICS } from '@/types/metrics';
 import { WeeklyReview } from '@/types/goals';
 
 import {
-  subscribeGoals, upsertGoal, removeGoal,
-  subscribeTasks, upsertTask, removeTask,
-  subscribeLog, upsertLog,
-  fetchLogs,
+  subscribeGoals, upsertGoal, removeGoal, autoCompleteGoal,
+  subscribeStandaloneTasks, upsertStandaloneTask, removeStandaloneTask,
+  fetchAllGoalTasks, upsertGoalTask, removeGoalTask,
+  subscribeLog, upsertLog, fetchLogs,
+  subscribeLinks, upsertLink, removeLink,
   fetchReminders, subscribeReminders, upsertReminder, removeReminder,
   fetchQuietHours, upsertQuietHours,
   fetchReviews, upsertReview,
-  subscribeMetrics, upsertMetric, removeMetric,
 } from '@/services/firebase/personalOS';
 
-import { computeGoalProgress, formatIndianNumber } from '@/lib/goals/computeGoalProgress';
+import { computeGoalProgress } from '@/lib/goals/computeGoalProgress';
 import { initReminderNotificationService, syncLocalScheduledReminders } from '@/services/notifications/reminderNotificationService';
-import { StepTrackerService } from '@/services/steps/stepTrackerService';
 import { toastService } from '@/services/toastService';
 
 export function getTodayStr(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return formatLocalDate(new Date());
 }
 
 export interface PersonalOSData {
-  // Meta
   isSynced: boolean;
   loading: boolean;
   todayStr: string;
 
-  // Collections
-  metrics: MetricDefinition[];
   goals: Goal[];
-  tasks: Task[];
+  standaloneTasks: Task[];
+  goalTasksMap: Record<string, GoalTask[]>;
+  allGoalTasks: GoalTask[];
+  allUnifiedTasks: (Task | GoalTask)[];
   todayLog: DailyLog;
   allLogs: Record<string, DailyLog>;
+  links: QuickLink[];
   reminders: Reminder[];
   quietHours: QuietHours;
   reviews: WeeklyReview[];
 
-  // Derived
-  goalProgressList: { goal: Goal; progress: GoalCalculatedProgress; metric?: MetricDefinition }[];
-  todayTasks: Task[]; // tasks due today
+  goalProgressList: { goal: Goal; progress: GoalCalculatedProgress; tasks: GoalTask[] }[];
+  todayStandaloneTasks: Task[];
+  remainingTodayTasksCount: number;
 
-  // Metric mutations
-  saveMetric: (m: MetricDefinition) => Promise<void>;
-  deleteMetric: (id: string) => Promise<void>;
-
-  // Goal & Task mutations
-  saveGoal: (goal: Goal) => Promise<void>;
+  // Mutations
+  saveGoal: (goal: Goal, tasksToSave?: Partial<GoalTask>[]) => Promise<void>;
   deleteGoal: (id: string) => Promise<void>;
-  saveTask: (task: Task) => Promise<void>;
-  deleteTask: (id: string) => Promise<void>;
-  toggleTask: (taskId: string) => Promise<void>;
 
-  // Log mutations
+  saveStandaloneTask: (task: Task) => Promise<void>;
+  deleteStandaloneTask: (id: string) => Promise<void>;
+
+  saveGoalTask: (task: GoalTask) => Promise<void>;
+  deleteGoalTask: (goalId: string, taskId: string) => Promise<void>;
+
+  toggleTask: (taskId: string, dateStr?: string, customAmount?: number) => Promise<void>;
+  logGoalValue: (goalId: string, value: number, dateStr?: string) => Promise<void>;
+  applyPaceSuggestion: (goalId: string, taskId: string, newPlannedAmount: number) => Promise<void>;
+
+  saveLink: (link: QuickLink) => Promise<void>;
+  deleteLink: (id: string) => Promise<void>;
+
   updateTodayLog: (log: Partial<DailyLog>) => Promise<void>;
   updateLogForDate: (date: string, log: Partial<DailyLog>) => Promise<void>;
 
-  // Reminders & Reviews
   saveReminder: (r: Reminder) => Promise<void>;
   deleteReminder: (id: string) => Promise<void>;
   saveQuietHours: (qh: QuietHours) => Promise<void>;
   saveReview: (r: WeeklyReview) => Promise<void>;
 
-  // CSV export
   exportCSV: () => string;
 }
 
@@ -89,40 +87,55 @@ export function usePersonalOS(): PersonalOSData {
   const todayStr = getTodayStr();
 
   const [loading, setLoading] = useState(true);
-  const [metrics, setMetrics] = useState<MetricDefinition[]>(DEFAULT_METRICS);
   const [goals, setGoals] = useState<Goal[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [standaloneTasks, setStandaloneTasks] = useState<Task[]>([]);
+  const [allGoalTasks, setAllGoalTasks] = useState<GoalTask[]>([]);
   const [todayLog, setTodayLog] = useState<DailyLog>(createEmptyLog(todayStr));
   const [allLogs, setAllLogs] = useState<Record<string, DailyLog>>({});
+  const [links, setLinks] = useState<QuickLink[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [quietHours, setQuietHours] = useState<QuietHours>({ enabled: true, startHour: 23, endHour: 6 });
   const [reviews, setReviews] = useState<WeeklyReview[]>([]);
 
-  // Real-time subscriptions
+  // Subscriptions
   useEffect(() => {
-    const unsubMetrics = subscribeMetrics(setMetrics);
     const unsubGoals = subscribeGoals(setGoals);
-    const unsubTasks = subscribeTasks(setTasks);
+    const unsubTasks = subscribeStandaloneTasks(setStandaloneTasks);
+    const unsubLinks = subscribeLinks(setLinks);
     const unsubReminders = subscribeReminders(setReminders);
     const unsubLog = subscribeLog(todayStr, (log) => {
       setTodayLog(log);
       setAllLogs((prev) => ({ ...prev, [todayStr]: log }));
     });
+
     return () => {
-      unsubMetrics();
       unsubGoals();
       unsubTasks();
+      unsubLinks();
       unsubReminders();
       unsubLog();
     };
   }, [todayStr]);
 
-  // Initial fetch for background collections & notifications
+  // Fetch all goal tasks when goals change
+  const reloadGoalTasks = useCallback(async (currentGoals: Goal[]) => {
+    if (currentGoals.length === 0) {
+      setAllGoalTasks([]);
+      return;
+    }
+    const gTasks = await fetchAllGoalTasks(currentGoals);
+    setAllGoalTasks(gTasks);
+  }, []);
+
+  useEffect(() => {
+    reloadGoalTasks(goals);
+  }, [goals, reloadGoalTasks]);
+
+  // Initial loads
   useEffect(() => {
     let mounted = true;
     (async () => {
       await initReminderNotificationService();
-
       const [logs, rems, qh, revs] = await Promise.all([
         fetchLogs(),
         fetchReminders(),
@@ -135,76 +148,108 @@ export function usePersonalOS(): PersonalOSData {
       setQuietHours(qh);
       setReviews(revs);
       setLoading(false);
-
-      // Start step tracking
-      StepTrackerService.startStepTracking(todayLog);
     })();
 
     return () => {
       mounted = false;
-      StepTrackerService.stopStepTracking();
     };
   }, []);
 
-  // Sync scheduled push notifications whenever reminders, quiet hours, or today's log change
-  useEffect(() => {
-    if (!loading) {
-      syncLocalScheduledReminders(reminders, todayLog, quietHours);
-    }
-  }, [reminders, todayLog, quietHours, loading]);
-
-  // Map of metric ID -> MetricDefinition
-  const metricMap = useMemo(() => {
-    const map = new Map<string, MetricDefinition>();
-    metrics.forEach((m) => map.set(m.id, m));
+  // Goal tasks map by goalId
+  const goalTasksMap = useMemo(() => {
+    const map: Record<string, GoalTask[]> = {};
+    allGoalTasks.forEach((gt) => {
+      if (!map[gt.goalId]) map[gt.goalId] = [];
+      map[gt.goalId].push(gt);
+    });
     return map;
-  }, [metrics]);
+  }, [allGoalTasks]);
 
-  // Derived Goal progress list using pure computeGoalProgress
+  // Unified list of all tasks for dropdown linking
+  const allUnifiedTasks = useMemo(() => {
+    return [...standaloneTasks, ...allGoalTasks];
+  }, [standaloneTasks, allGoalTasks]);
+
+  // Goal Progress List (Pure derivation from logs)
   const goalProgressList = useMemo(() => {
     return goals.map((goal) => {
-      const metric = goal.metricId ? metricMap.get(goal.metricId) : undefined;
-      const progress = computeGoalProgress(goal, metric, allLogs, todayStr);
-      return { goal, progress, metric };
+      const gTasks = goalTasksMap[goal.id] || [];
+      const progress = computeGoalProgress(goal, gTasks, allLogs, todayStr);
+      return { goal, progress, tasks: gTasks };
     });
-  }, [goals, metricMap, allLogs, todayStr]);
+  }, [goals, goalTasksMap, allLogs, todayStr]);
 
-  // Tasks due today using isTaskDueOn
-  const today = useMemo(() => new Date(), [todayStr]);
-  const todayTasks = useMemo(() => {
-    return tasks.filter((t) => isTaskDueOn(t, today));
-  }, [tasks, today]);
+  // Idempotent Auto-Complete check using Firestore transaction
+  useEffect(() => {
+    goalProgressList.forEach(async ({ goal, progress }) => {
+      if (goal.status === 'active' && progress.valuePct >= 100) {
+        const completed = await autoCompleteGoal(goal.id);
+        if (completed) {
+          toastService.show(`🎉 Goal "${goal.title}" completed!`, 'success');
+        }
+      }
+    });
+  }, [goalProgressList]);
 
-  // Metric Mutations
-  const saveMetric = async (metric: MetricDefinition) => {
-    await upsertMetric(metric);
-    toastService.show(`Metric "${metric.name}" saved!`, 'success');
-  };
+  // Today Standalone Tasks (accounting for Monday-based timesPerWeek resets)
+  const todayObj = useMemo(() => new Date(), [todayStr]);
+  const todayStandaloneTasks = useMemo(() => {
+    return standaloneTasks.filter((t) => {
+      const compCount = countTaskCompletionsThisWeek(t.id, allLogs, todayObj);
+      return isTaskDueOn(t, todayObj, compCount);
+    });
+  }, [standaloneTasks, allLogs, todayObj]);
 
-  const deleteMetric = async (id: string) => {
-    await removeMetric(id);
-    toastService.show('Metric archived.', 'info');
-  };
+  // Remaining Today Tasks Count for 9:00 PM reminder
+  const remainingTodayTasksCount = useMemo(() => {
+    let dueCount = 0;
+    let doneCount = 0;
 
-  // Goal Mutations
-  const saveGoal = async (goal: Goal) => {
+    todayStandaloneTasks.forEach((t) => {
+      dueCount++;
+      if (todayLog.done?.[t.id]) doneCount++;
+    });
+
+    allGoalTasks.forEach((gt) => {
+      const compCount = countTaskCompletionsThisWeek(gt.id, allLogs, todayObj);
+      if (isTaskDueOn(gt, todayObj, compCount)) {
+        dueCount++;
+        if (todayLog.done?.[gt.id]) doneCount++;
+      }
+    });
+
+    return Math.max(0, dueCount - doneCount);
+  }, [todayStandaloneTasks, allGoalTasks, allLogs, todayObj, todayLog]);
+
+  // Sync scheduled notifications when reminders, logs, quietHours change
+  useEffect(() => {
+    if (!loading) {
+      syncLocalScheduledReminders(reminders, todayLog, quietHours, remainingTodayTasksCount);
+    }
+  }, [reminders, todayLog, quietHours, remainingTodayTasksCount, loading]);
+
+  // Mutations: Goal
+  const saveGoal = async (goal: Goal, tasksToSave?: Partial<GoalTask>[]) => {
     await upsertGoal(goal);
 
-    // If "create daily task" is enabled and no task exists yet for this goal, auto-create one
-    if (goal.createDailyTask && goal.type !== 'habit') {
-      const existing = tasks.find((t) => t.goalId === goal.id);
-      if (!existing) {
-        const newTask: Task = {
-          id: `task-goal-${goal.id}-${Date.now()}`,
-          title: `Daily progress on ${goal.title}`,
+    if (tasksToSave && tasksToSave.length > 0) {
+      for (const t of tasksToSave) {
+        const fullTask: GoalTask = {
+          id: t.id || `gtask-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
           goalId: goal.id,
-          recurrence: 'daily',
-          reminderTime: null,
-          active: true,
+          title: t.title || 'Daily Task',
+          kind: t.kind || 'check',
+          unit: t.unit || goal.unit,
+          plannedAmount: t.plannedAmount,
+          rule: t.rule || 'atLeast',
+          repeat: t.repeat || { type: 'daily' },
+          active: t.active ?? true,
+          avoidSuccess: t.avoidSuccess ?? false,
           createdAt: new Date().toISOString(),
         };
-        await upsertTask(newTask);
+        await upsertGoalTask(fullTask);
       }
+      await reloadGoalTasks(goals.concat(goal));
     }
 
     toastService.show('Goal saved!', 'success');
@@ -212,72 +257,134 @@ export function usePersonalOS(): PersonalOSData {
 
   const deleteGoal = async (id: string) => {
     await removeGoal(id);
-    // Unlink tasks linked to this goal
-    const linkedTasks = tasks.filter((t) => t.goalId === id);
-    for (const t of linkedTasks) {
-      await upsertTask({ ...t, goalId: null });
-    }
-    toastService.show('Goal deleted. Linked tasks unlinked.', 'info');
+    setAllGoalTasks((prev) => prev.filter((t) => t.goalId !== id));
+    // Update local reminders state to remove any deleted taskId links
+    setReminders((prev) =>
+      prev.map((r) => {
+        const wasLinkedToGoal = allGoalTasks.some((t) => t.goalId === id && t.id === r.taskId);
+        return wasLinkedToGoal ? { ...r, taskId: null } : r;
+      })
+    );
+    toastService.show('Goal and tasks deleted.', 'info');
   };
 
-  // Task Mutations
-  const saveTask = async (task: Task) => {
-    await upsertTask(task);
+  // Mutations: Standalone Tasks
+  const saveStandaloneTask = async (task: Task) => {
+    await upsertStandaloneTask(task);
     toastService.show('Task saved!', 'success');
   };
 
-  const deleteTask = async (id: string) => {
-    await removeTask(id);
-    // Unlink reminders linked to this task
-    const linkedReminders = reminders.filter((r) => r.taskId === id);
-    for (const r of linkedReminders) {
-      await upsertReminder({ ...r, taskId: null });
-    }
+  const deleteStandaloneTask = async (id: string) => {
+    await removeStandaloneTask(id);
+    setReminders((prev) => prev.map((r) => (r.taskId === id ? { ...r, taskId: null } : r)));
     toastService.show('Task deleted.', 'info');
   };
 
-  // Task completion toggle (handles metric delta if task is metric-linked)
-  const toggleTask = async (taskId: string) => {
-    const isDone = (todayLog.completedTaskIds || []).includes(taskId);
-    const updatedIds = isDone
-      ? (todayLog.completedTaskIds || []).filter((id) => id !== taskId)
-      : [...(todayLog.completedTaskIds || []), taskId];
+  // Mutations: Goal Tasks
+  const saveGoalTask = async (task: GoalTask) => {
+    await upsertGoalTask(task);
+    setAllGoalTasks((prev) => {
+      const idx = prev.findIndex((t) => t.id === task.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = task;
+        return next;
+      }
+      return [...prev, task];
+    });
+    toastService.show('Goal task saved!', 'success');
+  };
 
-    const task = tasks.find((t) => t.id === taskId);
-    let updatedMetrics = { ...todayLog.metrics };
+  const deleteGoalTask = async (goalId: string, taskId: string) => {
+    await removeGoalTask(goalId, taskId);
+    setAllGoalTasks((prev) => prev.filter((t) => t.id !== taskId));
+    setReminders((prev) => prev.map((r) => (r.taskId === taskId ? { ...r, taskId: null } : r)));
+    toastService.show('Task deleted.', 'info');
+  };
 
-    // If task has bound metricId & amount, automatically update today's metric!
-    if (task && task.metricId && typeof task.amount === 'number' && task.amount > 0) {
-      const currentVal = Math.max(0, updatedMetrics[task.metricId] ?? 0);
-      const delta = isDone ? -task.amount : task.amount; // unticking subtracts, ticking adds
-      const nextVal = Math.max(0, currentVal + delta);
-      updatedMetrics[task.metricId] = nextVal;
+  // Toggle Task Completion
+  const toggleTask = async (taskId: string, dateStr: string = todayStr, customAmount?: number) => {
+    const targetLog = allLogs[dateStr] || createEmptyLog(dateStr);
+    const existingVal = targetLog.done?.[taskId];
+
+    let newDoneMap = { ...targetLog.done };
+
+    if (existingVal !== undefined && existingVal !== null && existingVal !== false) {
+      delete newDoneMap[taskId];
+      toastService.show('Task un-ticked. (Undo)', 'info');
+    } else {
+      if (typeof customAmount === 'number') {
+        newDoneMap[taskId] = customAmount;
+      } else {
+        const gTask = allGoalTasks.find((t) => t.id === taskId);
+        if (gTask && gTask.kind === 'amount') {
+          newDoneMap[taskId] = gTask.plannedAmount || 1;
+        } else {
+          newDoneMap[taskId] = true;
+        }
+      }
     }
 
     const updatedLog: DailyLog = {
-      ...todayLog,
-      completedTaskIds: updatedIds,
-      metrics: updatedMetrics,
+      ...targetLog,
+      done: newDoneMap,
       updatedAt: new Date().toISOString(),
     };
 
-    setTodayLog(updatedLog);
-    setAllLogs((prev) => ({ ...prev, [todayStr]: updatedLog }));
+    if (dateStr === todayStr) {
+      setTodayLog(updatedLog);
+    }
+    setAllLogs((prev) => ({ ...prev, [dateStr]: updatedLog }));
     await upsertLog(updatedLog);
   };
 
-  // Log Mutations
+  // Log Daily Goal Entry value
+  const logGoalValue = async (goalId: string, value: number, dateStr: string = todayStr) => {
+    const targetLog = allLogs[dateStr] || createEmptyLog(dateStr);
+    const updatedEntries = { ...targetLog.entries, [goalId]: value };
+
+    const updatedLog: DailyLog = {
+      ...targetLog,
+      entries: updatedEntries,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (dateStr === todayStr) setTodayLog(updatedLog);
+    setAllLogs((prev) => ({ ...prev, [dateStr]: updatedLog }));
+    await upsertLog(updatedLog);
+    toastService.show(`Logged value ${value}!`, 'success');
+  };
+
+  // Catch-up suggestion: only updates plannedAmount for future days (historical logs remain unchanged)
+  const applyPaceSuggestion = async (goalId: string, taskId: string, newPlannedAmount: number) => {
+    const targetTask = allGoalTasks.find((t) => t.id === taskId);
+    if (!targetTask) return;
+
+    const updated = { ...targetTask, plannedAmount: newPlannedAmount, updatedAt: new Date().toISOString() };
+    await saveGoalTask(updated);
+    toastService.show(`Planned amount updated to ${newPlannedAmount} for future days!`, 'success');
+  };
+
+  // Mutations: Links
+  const saveLink = async (link: QuickLink) => {
+    await upsertLink(link);
+    toastService.show('Quick link saved!', 'success');
+  };
+
+  const deleteLink = async (id: string) => {
+    await removeLink(id);
+    toastService.show('Quick link removed.', 'info');
+  };
+
+  // Mutations: Logs & Reminders
   const updateTodayLog = async (partial: Partial<DailyLog>) => {
     const updated: DailyLog = {
       ...todayLog,
       ...partial,
-      metrics: {
-        ...(todayLog.metrics || {}),
-        ...(partial.metrics || {}),
-      },
+      done: { ...(todayLog.done || {}), ...(partial.done || {}) },
+      entries: { ...(todayLog.entries || {}), ...(partial.entries || {}) },
       updatedAt: new Date().toISOString(),
     };
-
     setTodayLog(updated);
     setAllLogs((prev) => ({ ...prev, [todayStr]: updated }));
     await upsertLog(updated);
@@ -288,22 +395,16 @@ export function usePersonalOS(): PersonalOSData {
     const updated: DailyLog = {
       ...current,
       ...partial,
-      metrics: {
-        ...(current.metrics || {}),
-        ...(partial.metrics || {}),
-      },
+      done: { ...(current.done || {}), ...(partial.done || {}) },
+      entries: { ...(current.entries || {}), ...(partial.entries || {}) },
       updatedAt: new Date().toISOString(),
     };
-
-    if (date === todayStr) {
-      setTodayLog(updated);
-    }
+    if (date === todayStr) setTodayLog(updated);
     setAllLogs((prev) => ({ ...prev, [date]: updated }));
     await upsertLog(updated);
   };
 
   const saveReminder = async (r: Reminder) => {
-    // Optimistically update local state immediately
     setReminders((prev) => {
       const idx = prev.findIndex((item) => item.id === r.id);
       if (idx >= 0) {
@@ -317,7 +418,6 @@ export function usePersonalOS(): PersonalOSData {
   };
 
   const deleteReminder = async (id: string) => {
-    // Optimistically remove from local state immediately
     setReminders((prev) => prev.filter((item) => item.id !== id));
     await removeReminder(id);
   };
@@ -342,70 +442,76 @@ export function usePersonalOS(): PersonalOSData {
     toastService.show('Weekly review saved!', 'success');
   };
 
-  // Dynamic CSV Export across all registered metrics
+  // CSV Export across all days and active goals
   const exportCSV = useCallback((): string => {
     const dates = Object.keys(allLogs).sort((a, b) => b.localeCompare(a));
-    const activeMetrics = metrics.filter((m) => !m.archived);
-
-    const headers = [
-      'Date',
-      'Tasks Completed',
-      'Total Tasks Due',
-      ...activeMetrics.map((m) => `${m.name} (${m.unit})`),
-      'Mood (1-5)',
-      'Energy (1-5)',
-      'Note',
-    ];
+    const activeGoals = goals.filter((g) => g.status === 'active');
+    const headers = ['Date', 'Tasks Done Count', ...activeGoals.map((g) => `Goal: ${g.title} (${g.unit || ''})`), 'Mood', 'Note'];
 
     const rows = dates.map((d) => {
       const log = allLogs[d];
-      const completedCount = log?.completedTaskIds?.length || 0;
-      const metricValues = activeMetrics.map((m) => {
-        const val = log?.metrics?.[m.id];
-        return val !== undefined && val !== null ? val : '';
+      const doneCount = Object.keys(log?.done || {}).length;
+      const goalVals = activeGoals.map((g) => {
+        const directVal = log?.entries?.[g.id];
+        if (directVal !== undefined && directVal !== null) return directVal;
+        return '';
       });
 
       return [
         d,
-        completedCount,
-        tasks.length,
-        ...metricValues,
+        doneCount,
+        ...goalVals,
         log?.mood || '',
-        log?.energy || '',
         `"${(log?.note || '').replace(/"/g, '""')}"`,
       ].join(',');
     });
 
     return [headers.join(','), ...rows].join('\n');
-  }, [allLogs, metrics, tasks]);
+  }, [allLogs, goals]);
 
   return {
     isSynced,
     loading,
     todayStr,
-    metrics,
+
     goals,
-    tasks,
+    standaloneTasks,
+    goalTasksMap,
+    allGoalTasks,
+    allUnifiedTasks,
     todayLog,
     allLogs,
+    links,
     reminders,
     quietHours,
     reviews,
+
     goalProgressList,
-    todayTasks,
-    saveMetric,
-    deleteMetric,
+    todayStandaloneTasks,
+    remainingTodayTasksCount,
+
     saveGoal,
     deleteGoal,
-    saveTask,
-    deleteTask,
+    saveStandaloneTask,
+    deleteStandaloneTask,
+    saveGoalTask,
+    deleteGoalTask,
+
     toggleTask,
+    logGoalValue,
+    applyPaceSuggestion,
+
+    saveLink,
+    deleteLink,
+
     updateTodayLog,
     updateLogForDate,
+
     saveReminder,
     deleteReminder,
     saveQuietHours,
     saveReview,
+
     exportCSV,
   };
 }

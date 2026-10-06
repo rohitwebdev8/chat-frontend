@@ -1,27 +1,4 @@
-/**
- * GoalsView.tsx — Unified Goal Tracking, Live Creation Flow & Goal Details.
- *
- * Features:
- *  1. Create Goal Flow:
- *     - Pick Goal Type: Target / Cumulative / Habit.
- *     - Pick Metric from dynamic registry (or "+ New Metric").
- *     - Start value auto-prefilled from latest log, Target value.
- *     - Period chips (7d, 30d, This month, Custom) with calendar picker.
- *     - Live Pacing Preview (e.g. "Need -0.17 kg/day" or "Need 10,000 steps/day · On track").
- *     - Toggle "Create a daily task for this" (default ON).
- *     - Indian number formatting (en-IN, lakhs, ₹).
- *  2. Goal Cards:
- *     - Dual progress bars: Value Progress (%) vs Timeline Progress (%).
- *     - Status badge (Ahead, On track, Behind, Completed).
- *     - Pacing subtitle: "Needs X/day vs your pace Y/day".
- *  3. Goal Detail Modal:
- *     - Mini chart / pacing breakdown (actual vs ideal pace).
- *     - Quick "Log Value" button writing to today's log.
- *     - History of recent logged values.
- *     - Linked tasks & Edit/Delete actions.
- */
-
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -29,1019 +6,532 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  Modal,
   Alert,
-  KeyboardAvoidingView,
+  Linking,
   Platform,
+  Switch,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Goal, GoalCategory, GoalType, GoalCalculatedProgress } from '@/types/goals';
-import { MetricDefinition } from '@/types/metrics';
-import { Task } from '@/types/tasks';
+import { Goal, GoalCategory, GoalCalculatedProgress, GoalPauseRange } from '@/types/goals';
+import { GoalTask, formatLocalDate } from '@/types/tasks';
+import { QuickLink } from '@/types/links';
 import { DailyLog } from '@/types/logs';
-import { ProgressBar } from '@/components/ui/Primitives';
-import { DatePickerModal, formatDisplayDate } from '@/components/ui/DatePickerModal';
-import { ManageMetricsModal } from '@/components/metrics/ManageMetricsModal';
-import { computeGoalProgress, formatIndianNumber } from '@/lib/goals/computeGoalProgress';
+import { GoalCard } from '@/components/goals/GoalCard';
+import { AddGoalWizardModal } from '@/components/goals/AddGoalWizardModal';
+import { BottomSheet } from '@/components/ui/BottomSheet';
 import theme from '@/constants/theme';
-import { toastService } from '@/services/toastService';
 
-interface Props {
+interface GoalsViewProps {
   goals: Goal[];
-  goalProgressList: { goal: Goal; progress: GoalCalculatedProgress; metric?: MetricDefinition }[];
-  metrics: MetricDefinition[];
-  tasks: Task[];
+  goalProgressList: { goal: Goal; progress: GoalCalculatedProgress; tasks: GoalTask[] }[];
   allLogs: Record<string, DailyLog>;
-  todayLog: DailyLog;
-  onSaveGoal: (goal: Goal) => Promise<void>;
+  links: QuickLink[];
+  onSaveGoal: (goal: Goal, tasks?: Partial<GoalTask>[]) => Promise<void>;
   onDeleteGoal: (id: string) => Promise<void>;
-  onSaveMetric: (metric: MetricDefinition) => Promise<void>;
-  onDeleteMetric: (id: string) => Promise<void>;
-  onUpdateTodayLog: (log: Partial<DailyLog>) => Promise<void>;
-  scrollPaddingBottom?: number;
+  onSaveGoalTask: (task: GoalTask) => Promise<void>;
+  onDeleteGoalTask: (goalId: string, taskId: string) => Promise<void>;
+  onLogGoalValue: (goalId: string, value: number) => Promise<void>;
+  onApplyPaceSuggestion: (goalId: string, taskId: string, suggestedAmount: number) => Promise<void>;
+  onSaveLink: (link: QuickLink) => Promise<void>;
+  onDeleteLink: (id: string) => Promise<void>;
+  scrollPaddingBottom: number;
 }
 
-const CATEGORIES: GoalCategory[] = [
-  'Health',
-  'Fitness',
-  'Diet',
-  'Study',
-  'Career',
-  'Finance',
-  'Personal',
-  'Custom',
-];
+const CATEGORIES: (GoalCategory | 'All')[] = ['All', 'Health', 'Fitness', 'Diet', 'Study', 'Career', 'Finance', 'Personal', 'Custom'];
 
-type PeriodOption = '7d' | '30d' | 'this_month' | 'custom';
-
-export const GoalsView: React.FC<Props> = ({
+export const GoalsView: React.FC<GoalsViewProps> = ({
   goals,
   goalProgressList,
-  metrics,
-  tasks,
   allLogs,
-  todayLog,
+  links,
   onSaveGoal,
   onDeleteGoal,
-  onSaveMetric,
-  onDeleteMetric,
-  onUpdateTodayLog,
-  scrollPaddingBottom = 100,
+  onSaveGoalTask,
+  onDeleteGoalTask,
+  onLogGoalValue,
+  onApplyPaceSuggestion,
+  onSaveLink,
+  onDeleteLink,
+  scrollPaddingBottom,
 }) => {
-  const insets = useSafeAreaInsets();
-  const [filterCategory, setFilterCategory] = useState<string>('All');
-  const [showManageMetrics, setShowManageMetrics] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<GoalCategory | 'All'>('All');
+  const [showAddWizard, setShowAddWizard] = useState(false);
 
-  // Goal Form Modal State
-  const [showModal, setShowModal] = useState(false);
-  const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
+  // Selected Goal Detail Modal State
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
 
-  // Form Fields
-  const [type, setType] = useState<GoalType>('target');
-  const [title, setTitle] = useState('');
-  const [category, setCategory] = useState<GoalCategory>('Health');
-  const [metricId, setMetricId] = useState<string>('weight');
-  const [startVal, setStartVal] = useState('70');
-  const [targetVal, setTargetVal] = useState('65');
-  const [periodOption, setPeriodOption] = useState<PeriodOption>('30d');
-  const [startDate, setStartDate] = useState(() => new Date().toISOString().split('T')[0]);
-  const [endDate, setEndDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 30);
-    return d.toISOString().split('T')[0];
+  // Quick Link Add Modal State
+  const [showAddLinkModal, setShowAddLinkModal] = useState(false);
+  const [linkName, setLinkName] = useState('');
+  const [linkUrl, setLinkUrl] = useState('');
+
+  // Pause Goal Range state inside Detail
+  const [showPauseSection, setShowPauseSection] = useState(false);
+  const [pauseStart, setPauseStart] = useState(formatLocalDate(new Date()));
+  const [pauseEnd, setPauseEnd] = useState(formatLocalDate(new Date(Date.now() + 5 * 86400000)));
+  const [pauseReason, setPauseReason] = useState('');
+  const [extendDeadline, setExtendDeadline] = useState(true);
+
+  // New Goal Task inside Detail modal
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
+
+  const selectedGoalDetail = goalProgressList.find((g) => g.goal.id === selectedGoalId);
+
+  const filteredGoals = goalProgressList.filter((item) => {
+    if (selectedCategory === 'All') return true;
+    return item.goal.category === selectedCategory;
   });
-  const [createDailyTask, setCreateDailyTask] = useState(true);
-  const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Calendar Pickers
-  const [showStartDatePicker, setShowStartDatePicker] = useState(false);
-  const [showEndDatePicker, setShowEndDatePicker] = useState(false);
+  const isCareerActive = selectedCategory === 'Career' || filteredGoals.some((g) => g.goal.category === 'Career');
 
-  // Detail Modal State
-  const [selectedGoalDetail, setSelectedGoalDetail] = useState<{ goal: Goal; progress: GoalCalculatedProgress; metric?: MetricDefinition } | null>(null);
-  const [logValueInput, setLogValueInput] = useState('');
-
-  // Selected Metric in Form
-  const selectedMetric = useMemo(() => {
-    return metrics.find((m) => m.id === metricId) || metrics[0];
-  }, [metrics, metricId]);
-
-  // Handle Opening Create Modal
-  const handleOpenCreate = () => {
-    const todayStr = new Date().toISOString().split('T')[0];
-    const defaultEnd = new Date();
-    defaultEnd.setDate(defaultEnd.getDate() + 30);
-    const endStr = defaultEnd.toISOString().split('T')[0];
-
-    const initialMetric = metrics[0] || { id: 'weight', unit: 'kg' };
-    const latestLogged = todayLog?.metrics?.[initialMetric.id] ?? 70;
-
-    setEditingGoal(null);
-    setType('target');
-    setTitle('');
-    setCategory('Health');
-    setMetricId(initialMetric.id);
-    setStartVal(String(latestLogged));
-    setTargetVal(String(Number(latestLogged) - 5));
-    setPeriodOption('30d');
-    setStartDate(todayStr);
-    setEndDate(endStr);
-    setCreateDailyTask(true);
-    setErrors({});
-    setShowModal(true);
-  };
-
-  // Handle Opening Edit Modal
-  const handleOpenEdit = (goal: Goal) => {
-    setEditingGoal(goal);
-    setType((goal.type as GoalType) || 'target');
-    setTitle(goal.title);
-    setCategory(goal.category);
-    setMetricId(goal.metricId || metrics[0]?.id || 'weight');
-    setStartVal(String(goal.startValue));
-    setTargetVal(String(goal.targetValue));
-    setStartDate(goal.startDate);
-    setEndDate(goal.endDate || goal.deadline || goal.startDate);
-    setPeriodOption('custom');
-    setCreateDailyTask(!!goal.createDailyTask);
-    setErrors({});
-    setSelectedGoalDetail(null);
-    setShowModal(true);
-  };
-
-  // Auto-Prefill Start Value when Metric or Type Changes
-  const handleSelectMetric = (mId: string) => {
-    setMetricId(mId);
-    const m = metrics.find((item) => item.id === mId);
-    if (!m) return;
-
-    if (type === 'target') {
-      const latestVal = todayLog?.metrics?.[mId];
-      if (typeof latestVal === 'number' && latestVal > 0) {
-        setStartVal(String(latestVal));
-        const delta = m.direction === 'decrease' ? -5 : 5;
-        setTargetVal(String(Math.max(0, latestVal + delta)));
-      } else if (m.id === 'weight') {
-        setStartVal('70');
-        setTargetVal('65');
-      }
-    } else if (type === 'cumulative') {
-      setStartVal('0');
-      if (m.id === 'steps') setTargetVal('300000');
-      else if (m.id === 'savings') setTargetVal('50000');
-      else setTargetVal('100');
+  const handleOpenLink = (url: string) => {
+    if (Platform.OS === 'web') {
+      window.open(url, '_blank');
+    } else {
+      Linking.openURL(url).catch(() => Alert.alert('Error', 'Could not open URL.'));
     }
   };
 
-  // Apply Period Preset
-  const handleSelectPeriod = (opt: PeriodOption) => {
-    setPeriodOption(opt);
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
-    setStartDate(todayStr);
-
-    if (opt === '7d') {
-      const d = new Date(today);
-      d.setDate(d.getDate() + 7);
-      setEndDate(d.toISOString().split('T')[0]);
-    } else if (opt === '30d') {
-      const d = new Date(today);
-      d.setDate(d.getDate() + 30);
-      setEndDate(d.toISOString().split('T')[0]);
-    } else if (opt === 'this_month') {
-      const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-      setEndDate(lastDay.toISOString().split('T')[0]);
+  const handleSaveQuickLink = async () => {
+    if (!linkName.trim() || !linkUrl.trim()) return;
+    let url = linkUrl.trim();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = `https://${url}`;
     }
-  };
-
-  // Live Preview Calculation in Form
-  const livePreviewProgress = useMemo(() => {
-    const sVal = parseFloat(startVal) || 0;
-    const tVal = parseFloat(targetVal) || 0;
-    const tempGoal: Goal = {
-      id: 'temp_preview',
-      title: title || 'New Goal',
-      category,
-      type,
-      metricId,
-      startValue: sVal,
-      targetValue: tVal,
-      startDate,
-      endDate,
-      status: 'active',
-      createdAt: startDate,
-      updatedAt: startDate,
+    const newLink: QuickLink = {
+      id: `link-${Date.now()}`,
+      name: linkName.trim(),
+      url,
+      createdAt: new Date().toISOString(),
     };
-    return computeGoalProgress(tempGoal, selectedMetric, allLogs, startDate);
-  }, [title, category, type, metricId, startVal, targetVal, startDate, endDate, selectedMetric, allLogs]);
-
-  // Form Validation
-  const validateForm = (): boolean => {
-    const errs: Record<string, string> = {};
-
-    if (!title.trim() || title.trim().length < 2) {
-      errs.title = 'Title must be at least 2 characters.';
-    }
-
-    const startNum = parseFloat(startVal);
-    const targetNum = parseFloat(targetVal);
-
-    if (isNaN(startNum)) errs.startVal = 'Start value must be a number.';
-    if (isNaN(targetNum)) errs.targetVal = 'Target value must be a number.';
-
-    if (!isNaN(startNum) && !isNaN(targetNum)) {
-      if (type === 'target' && startNum === targetNum) {
-        errs.targetVal = 'Target value cannot equal start value.';
-      }
-      if (type === 'cumulative' && targetNum <= 0) {
-        errs.targetVal = 'Target must be greater than 0.';
-      }
-    }
-
-    if (!endDate || endDate <= startDate) {
-      errs.endDate = 'End date must be after start date.';
-    }
-
-    setErrors(errs);
-    return Object.keys(errs).length === 0;
+    await onSaveLink(newLink);
+    setShowAddLinkModal(false);
+    setLinkName('');
+    setLinkUrl('');
   };
 
-  // Save Goal Handler
-  const handleSaveForm = async () => {
-    if (!validateForm()) {
-      toastService.show('Please fix form errors before saving.', 'error');
-      return;
-    }
-
-    const goalToSave: Goal = {
-      id: editingGoal ? editingGoal.id : `goal-${Date.now()}`,
-      title: title.trim(),
-      category,
-      type,
-      metricId,
-      startValue: parseFloat(startVal),
-      targetValue: parseFloat(targetVal),
-      startDate,
-      endDate,
-      deadline: endDate,
-      createDailyTask,
-      status: editingGoal ? editingGoal.status : 'active',
-      createdAt: editingGoal ? editingGoal.createdAt : new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await onSaveGoal(goalToSave);
-    setShowModal(false);
-  };
-
-  // Delete Goal Handler
-  const handleDeleteConfirm = (goal: Goal) => {
-    Alert.alert('Delete Goal', `Delete "${goal.title}"? Linked tasks will be unlinked.`, [
+  const handleDeleteGoalConfirm = (goalId: string, title: string) => {
+    Alert.alert('Delete Goal', `Are you sure you want to delete "${title}"? This will delete all its tasks.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          await onDeleteGoal(goal.id);
-          if (editingGoal?.id === goal.id) setShowModal(false);
-          if (selectedGoalDetail?.goal.id === goal.id) setSelectedGoalDetail(null);
+          await onDeleteGoal(goalId);
+          setSelectedGoalId(null);
         },
       },
     ]);
   };
 
-  // Quick Log Metric from Detail Modal
-  const handleQuickLogDetail = async () => {
-    if (!selectedGoalDetail || !selectedGoalDetail.metric) return;
-    const num = parseFloat(logValueInput);
-    if (isNaN(num)) return;
-
-    const mId = selectedGoalDetail.metric.id;
-    const current = todayLog?.metrics?.[mId] ?? 0;
-    const next = selectedGoalDetail.metric.aggregation === 'sum' ? current + num : num;
-
-    await onUpdateTodayLog({
-      metrics: {
-        ...(todayLog.metrics || {}),
-        [mId]: Math.max(0, next),
-      },
-    });
-
-    setLogValueInput('');
-    toastService.show(`Logged ${num} ${selectedGoalDetail.metric.unit} for today!`, 'success');
+  const handleAddSubtaskToGoal = async () => {
+    if (!selectedGoalDetail || !newSubtaskTitle.trim()) return;
+    const newTask: GoalTask = {
+      id: `gtask-${Date.now()}`,
+      goalId: selectedGoalDetail.goal.id,
+      title: newSubtaskTitle.trim(),
+      kind: 'check',
+      repeat: { type: 'daily' },
+      active: true,
+      createdAt: new Date().toISOString(),
+    };
+    await onSaveGoalTask(newTask);
+    setNewSubtaskTitle('');
   };
 
-  // Filtered Goals
-  const filteredList = useMemo(() => {
-    if (filterCategory === 'All') return goalProgressList;
-    return goalProgressList.filter(({ goal }) => goal.category === filterCategory);
-  }, [goalProgressList, filterCategory]);
+  const handleAddPauseRange = async () => {
+    if (!selectedGoalDetail || !pauseStart || !pauseEnd) return;
+    if (pauseEnd < pauseStart) {
+      Alert.alert('Invalid Range', 'End date must be on or after start date.');
+      return;
+    }
+
+    const newRange: GoalPauseRange = {
+      id: `pause-${Date.now()}`,
+      startDate: pauseStart,
+      endDate: pauseEnd,
+      reason: pauseReason.trim() || undefined,
+    };
+
+    const existingRanges = selectedGoalDetail.goal.pauseRanges || [];
+    let updatedEndDate = selectedGoalDetail.goal.endDate;
+
+    if (extendDeadline && selectedGoalDetail.goal.endDate) {
+      const [sY, sM, sD] = pauseStart.split('-').map(Number);
+      const [eY, eM, eD] = pauseEnd.split('-').map(Number);
+      const daysCount = Math.max(1, Math.round((new Date(eY, eM - 1, eD).getTime() - new Date(sY, sM - 1, sD).getTime()) / 86400000) + 1);
+
+      const [curEY, curEM, curED] = selectedGoalDetail.goal.endDate.split('-').map(Number);
+      const newEndDt = new Date(new Date(curEY, curEM - 1, curED).getTime() + daysCount * 86400000);
+      updatedEndDate = formatLocalDate(newEndDt);
+    }
+
+    await onSaveGoal({
+      ...selectedGoalDetail.goal,
+      endDate: updatedEndDate,
+      pauseRanges: [...existingRanges, newRange],
+      updatedAt: new Date().toISOString(),
+    });
+
+    setShowPauseSection(false);
+    setPauseReason('');
+  };
+
+  const handleRemovePauseRange = async (rangeId: string) => {
+    if (!selectedGoalDetail) return;
+    const updatedRanges = (selectedGoalDetail.goal.pauseRanges || []).filter(
+      (r) => (r.id ? r.id !== rangeId : `${r.startDate}-${r.endDate}` !== rangeId)
+    );
+    await onSaveGoal({
+      ...selectedGoalDetail.goal,
+      pauseRanges: updatedRanges,
+      updatedAt: new Date().toISOString(),
+    });
+  };
 
   return (
-    <View style={styles.container}>
-      <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: scrollPaddingBottom }]}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Top Action Bar */}
-        <View style={styles.topBar}>
-          <TouchableOpacity style={styles.manageMetricsBtn} onPress={() => setShowManageMetrics(true)}>
-            <Ionicons name="options-outline" size={16} color={theme.colors.primary} />
-            <Text style={styles.manageMetricsText}>Manage Metrics ({metrics.length})</Text>
-          </TouchableOpacity>
+    <View style={styles.outerContainer}>
+      {/* Sticky Header with Title & Category Filter Chips */}
+      <View style={styles.stickyHeader}>
+        <View style={styles.topHeader}>
+          <View>
+            <Text style={styles.headerTitle}>Goals</Text>
+            <Text style={styles.headerSubtitle}>{goals.length} total goals tracked</Text>
+          </View>
 
-          <TouchableOpacity style={styles.createGoalBtn} onPress={handleOpenCreate}>
+          <TouchableOpacity style={styles.addGoalBtn} onPress={() => setShowAddWizard(true)}>
             <Ionicons name="add" size={18} color="#FFF" />
-            <Text style={styles.createGoalBtnText}>New Goal</Text>
+            <Text style={styles.addGoalBtnText}>Add Goal</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Category Chips */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryRow}>
-          {['All', ...CATEGORIES].map((cat) => (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.catScroll}>
+          {CATEGORIES.map((cat) => (
             <TouchableOpacity
               key={cat}
-              style={[styles.catChip, filterCategory === cat && styles.catChipActive]}
-              onPress={() => setFilterCategory(cat)}
+              style={[styles.catChip, selectedCategory === cat && styles.catChipActive]}
+              onPress={() => setSelectedCategory(cat)}
             >
-              <Text style={[styles.catChipText, filterCategory === cat && styles.catChipTextActive]}>
-                {cat}
-              </Text>
+              <Text style={[styles.catChipText, selectedCategory === cat && styles.catChipTextActive]}>{cat}</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
+      </View>
 
-        {/* Goals List */}
-        {filteredList.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Ionicons name="flag-outline" size={40} color={theme.colors.textSecondary} />
-            <Text style={styles.emptyTitle}>No goals in this category</Text>
-            <Text style={styles.emptySub}>Tap "+ New Goal" to set a milestone with live pacing.</Text>
+      <ScrollView contentContainerStyle={[styles.container, { paddingBottom: scrollPaddingBottom }]}>
+        {/* CAREER QUICK LINKS ROW (Show when Career category selected or present) */}
+        {isCareerActive && (
+          <View style={styles.quickLinksContainer}>
+            <View style={styles.quickLinksHeader}>
+              <Text style={styles.quickLinksTitle}>💼 Career Quick Links</Text>
+              <TouchableOpacity onPress={() => setShowAddLinkModal(true)}>
+                <Text style={styles.addLinkText}>+ Add Link</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.linksRow}>
+              {links.map((lk) => (
+                <TouchableOpacity
+                  key={lk.id}
+                  style={styles.linkChip}
+                  onPress={() => handleOpenLink(lk.url)}
+                  onLongPress={() => {
+                    Alert.alert('Remove Link', `Remove "${lk.name}"?`, [
+                      { text: 'Cancel' },
+                      { text: 'Remove', style: 'destructive', onPress: () => onDeleteLink(lk.id) },
+                    ]);
+                  }}
+                >
+                  <Ionicons name="open-outline" size={14} color={theme.colors.primary} />
+                  <Text style={styles.linkChipText}>{lk.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Goal Cards List */}
+        {filteredGoals.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons name="flag-outline" size={40} color={theme.colors.textMuted} />
+            <Text style={styles.emptyText}>No goals in {selectedCategory === 'All' ? 'any category' : selectedCategory}.</Text>
+            <TouchableOpacity style={styles.emptyAddBtn} onPress={() => setShowAddWizard(true)}>
+              <Text style={styles.emptyAddBtnText}>+ Create Goal</Text>
+            </TouchableOpacity>
           </View>
         ) : (
-          filteredList.map(({ goal, progress, metric }) => {
-            const unit = metric?.unit || '';
-            const isCurrency = unit === '₹';
-            const formattedCurrent = formatIndianNumber(progress.current, { isCurrency, unit: !isCurrency ? unit : undefined });
-            const formattedTarget = formatIndianNumber(goal.targetValue, { isCurrency, unit: !isCurrency ? unit : undefined });
-
-            return (
-              <TouchableOpacity
-                key={goal.id}
-                style={styles.goalCard}
-                onPress={() => setSelectedGoalDetail({ goal, progress, metric })}
-                activeOpacity={0.85}
-              >
-                {/* Header: Title & Status Badge */}
-                <View style={styles.goalCardHeader}>
-                  <View style={styles.goalHeaderLeft}>
-                    <Text style={styles.goalIcon}>{metric?.icon || '🎯'}</Text>
-                    <View>
-                      <Text style={styles.goalTitle}>{goal.title}</Text>
-                      <Text style={styles.goalCategory}>
-                        {(goal.category || 'General')} · {(goal.type || 'target').toUpperCase()} · Due {formatDisplayDate(goal.endDate || goal.deadline || goal.startDate)}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={[styles.statusBadge, { backgroundColor: `${progress.statusColor}18` }]}>
-                    <Text style={[styles.statusBadgeText, { color: progress.statusColor }]}>
-                      {progress.status}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Main Progress Row */}
-                <View style={styles.progressRow}>
-                  <Text style={styles.currentValText}>{formattedCurrent}</Text>
-                  <Text style={styles.targetValText}>Target: {formattedTarget}</Text>
-                </View>
-
-                {/* Dual Progress Bars: Value vs Timeline */}
-                <View style={styles.dualBarsContainer}>
-                  {/* Value Progress Bar */}
-                  <View style={styles.barItem}>
-                    <View style={styles.barLabelRow}>
-                      <Text style={styles.barLabel}>Value Progress</Text>
-                      <Text style={[styles.barVal, { color: progress.statusColor }]}>{progress.valuePct}%</Text>
-                    </View>
-                    <ProgressBar percent={progress.valuePct} height={8} color={progress.statusColor} />
-                  </View>
-
-                  {/* Timeline Progress Bar */}
-                  <View style={styles.barItem}>
-                    <View style={styles.barLabelRow}>
-                      <Text style={styles.barLabel}>Timeline Elapsed</Text>
-                      <Text style={styles.barVal}>{progress.timePct}%</Text>
-                    </View>
-                    <ProgressBar percent={progress.timePct} height={5} color="#94A3B8" />
-                  </View>
-                </View>
-
-                {/* Pacing Info Line */}
-                <View style={styles.pacingFooter}>
-                  <Ionicons name="speedometer-outline" size={14} color={progress.statusColor} />
-                  <Text style={styles.pacingText}>{progress.message}</Text>
-                </View>
-              </TouchableOpacity>
-            );
-          })
+          filteredGoals.map(({ goal, progress, tasks }) => (
+            <GoalCard
+              key={goal.id}
+              goal={goal}
+              progress={progress}
+              tasks={tasks}
+              compact={false}
+              onLogValue={() => onLogGoalValue(goal.id, progress.current)}
+              onApplyPaceSuggestion={onApplyPaceSuggestion}
+              onPressDetail={() => setSelectedGoalId(goal.id)}
+            />
+          ))
         )}
       </ScrollView>
 
-      {/* ── CREATE / EDIT GOAL MODAL ────────────────────────────────────── */}
-      <Modal visible={showModal} transparent animationType="slide" onRequestClose={() => setShowModal(false)}>
-        <KeyboardAvoidingView
-          style={styles.modalOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <ScrollView contentContainerStyle={styles.modalScroll} showsVerticalScrollIndicator={false}>
-            <View style={styles.modalContent}>
-              {/* Header */}
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>{editingGoal ? 'Edit Goal' : 'Create New Goal'}</Text>
-                <TouchableOpacity onPress={() => setShowModal(false)}>
-                  <Ionicons name="close-circle" size={24} color={theme.colors.textSecondary} />
+      {/* ADD GOAL WIZARD MODAL */}
+      <AddGoalWizardModal
+        visible={showAddWizard}
+        onClose={() => setShowAddWizard(false)}
+        onSave={onSaveGoal}
+      />
+
+      {/* GOAL DETAIL BOTTOM SHEET */}
+      <BottomSheet
+        visible={Boolean(selectedGoalDetail)}
+        title={selectedGoalDetail?.goal.title || 'Goal Detail'}
+        subtitle={`${selectedGoalDetail?.goal.category || ''} • ${selectedGoalDetail?.goal.type || ''}`}
+        onClose={() => setSelectedGoalId(null)}
+        footer={
+          <TouchableOpacity style={styles.sheetDoneBtn} onPress={() => setSelectedGoalId(null)}>
+            <Text style={styles.sheetDoneBtnText}>Done</Text>
+          </TouchableOpacity>
+        }
+      >
+        {selectedGoalDetail && (
+          <View style={styles.detailContent}>
+            {/* Full Goal Card Preview */}
+            <GoalCard
+              goal={selectedGoalDetail.goal}
+              progress={selectedGoalDetail.progress}
+              tasks={selectedGoalDetail.tasks}
+              onApplyPaceSuggestion={onApplyPaceSuggestion}
+            />
+
+            {/* Pause Goal Date Range Management */}
+            <View style={styles.detailSection}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.detailSectionTitle}>⏸️ Pause Dates (Travel / Rest)</Text>
+                <TouchableOpacity onPress={() => setShowPauseSection(!showPauseSection)}>
+                  <Text style={styles.actionToggleText}>{showPauseSection ? 'Cancel' : '+ Add Pause'}</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* 1. Goal Type Picker */}
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Goal Type</Text>
-                <View style={styles.pillsRow}>
-                  {(['target', 'cumulative', 'habit'] as GoalType[]).map((t) => (
-                    <TouchableOpacity
-                      key={t}
-                      style={[styles.pill, type === t && styles.pillActive]}
-                      onPress={() => {
-                        setType(t);
-                        handleSelectMetric(metricId);
-                      }}
-                    >
-                      <Text style={[styles.pillText, type === t && styles.pillTextActive]}>
-                        {t === 'target' ? '🎯 Target Value' : t === 'cumulative' ? '📈 Cumulative Sum' : '🔁 Habit / Count'}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-
-              {/* 2. Title & Category */}
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Goal Title *</Text>
-                <TextInput
-                  style={[styles.input, !!errors.title && styles.inputError]}
-                  placeholder="e.g. Weight 70→65 kg, Run 3,00,000 steps"
-                  placeholderTextColor="#94A3B8"
-                  value={title}
-                  onChangeText={(t) => { setTitle(t); setErrors((prev) => ({ ...prev, title: '' })); }}
-                />
-                {errors.title ? <Text style={styles.errorText}>{errors.title}</Text> : null}
-              </View>
-
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Category</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.pillsRow}>
-                  {CATEGORIES.map((cat) => (
-                    <TouchableOpacity
-                      key={cat}
-                      style={[styles.pill, category === cat && styles.pillActive]}
-                      onPress={() => setCategory(cat)}
-                    >
-                      <Text style={[styles.pillText, category === cat && styles.pillTextActive]}>{cat}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-
-              {/* 3. Pick Metric */}
-              <View style={styles.fieldGroup}>
-                <View style={styles.metricHeaderRow}>
-                  <Text style={styles.fieldLabel}>Linked Metric</Text>
-                  <TouchableOpacity onPress={() => setShowManageMetrics(true)}>
-                    <Text style={styles.newMetricLink}>+ Add New Metric</Text>
-                  </TouchableOpacity>
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.pillsRow}>
-                  {metrics.map((m) => (
-                    <TouchableOpacity
-                      key={m.id}
-                      style={[styles.pill, metricId === m.id && styles.pillActive]}
-                      onPress={() => handleSelectMetric(m.id)}
-                    >
-                      <Text style={[styles.pillText, metricId === m.id && styles.pillTextActive]}>
-                        {m.icon || '🎯'} {m.name} ({m.unit})
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-
-              {/* 4. Start Value & Target Value */}
-              <View style={styles.rowTwo}>
-                <View style={[styles.fieldGroup, { flex: 1 }]}>
-                  <Text style={styles.fieldLabel}>Start Value ({selectedMetric?.unit || 'units'})</Text>
-                  <TextInput
-                    style={[styles.input, !!errors.startVal && styles.inputError]}
-                    keyboardType="numeric"
-                    placeholder="70"
-                    placeholderTextColor="#94A3B8"
-                    value={startVal}
-                    onChangeText={(t) => { setStartVal(t); setErrors((prev) => ({ ...prev, startVal: '' })); }}
-                  />
-                  {errors.startVal ? <Text style={styles.errorText}>{errors.startVal}</Text> : null}
-                </View>
-
-                <View style={[styles.fieldGroup, { flex: 1 }]}>
-                  <Text style={styles.fieldLabel}>Target Value ({selectedMetric?.unit || 'units'}) *</Text>
-                  <TextInput
-                    style={[styles.input, !!errors.targetVal && styles.inputError]}
-                    keyboardType="numeric"
-                    placeholder="65"
-                    placeholderTextColor="#94A3B8"
-                    value={targetVal}
-                    onChangeText={(t) => { setTargetVal(t); setErrors((prev) => ({ ...prev, targetVal: '' })); }}
-                  />
-                  {errors.targetVal ? <Text style={styles.errorText}>{errors.targetVal}</Text> : null}
-                </View>
-              </View>
-
-              {/* 5. Period Chips & Dates */}
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Target Timeline</Text>
-                <View style={styles.pillsRow}>
-                  {(['7d', '30d', 'this_month', 'custom'] as PeriodOption[]).map((opt) => (
-                    <TouchableOpacity
-                      key={opt}
-                      style={[styles.pill, periodOption === opt && styles.pillActive]}
-                      onPress={() => handleSelectPeriod(opt)}
-                    >
-                      <Text style={[styles.pillText, periodOption === opt && styles.pillTextActive]}>
-                        {opt === '7d' ? '7 Days' : opt === '30d' ? '30 Days' : opt === 'this_month' ? 'This Month' : 'Custom'}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                {/* Start & End Date Selection */}
-                <View style={styles.rowTwo}>
-                  <View style={[styles.fieldGroup, { flex: 1 }]}>
-                    <Text style={styles.fieldLabel}>Start Date</Text>
-                    <TouchableOpacity
-                      style={styles.datePickerBtn}
-                      onPress={() => setShowStartDatePicker(true)}
-                    >
-                      <Ionicons name="calendar-outline" size={16} color={theme.colors.textSecondary} />
-                      <Text style={styles.datePickerBtnText}>{formatDisplayDate(startDate)}</Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={[styles.fieldGroup, { flex: 1 }]}>
-                    <Text style={styles.fieldLabel}>End Date *</Text>
-                    <TouchableOpacity
-                      style={[styles.datePickerBtn, !!errors.endDate && styles.inputError]}
-                      onPress={() => setShowEndDatePicker(true)}
-                    >
-                      <Ionicons name="calendar-outline" size={16} color={theme.colors.textSecondary} />
-                      <Text style={styles.datePickerBtnText}>{formatDisplayDate(endDate)}</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                {errors.endDate ? <Text style={styles.errorText}>{errors.endDate}</Text> : null}
-              </View>
-
-              {/* 6. Live Pacing Preview Banner */}
-              <View style={styles.livePreviewCard}>
-                <View style={styles.livePreviewHeader}>
-                  <Ionicons name="sparkles" size={16} color={theme.colors.primary} />
-                  <Text style={styles.livePreviewTitle}>LIVE PACING PREVIEW</Text>
-                </View>
-                <Text style={styles.livePreviewMessage}>{livePreviewProgress.message}</Text>
-                <Text style={styles.livePreviewSub}>
-                  Timeline: {livePreviewProgress.timePct}% · Daily required rate: {livePreviewProgress.requiredPerDay} {selectedMetric?.unit}/day
-                </Text>
-              </View>
-
-              {/* 7. Create Daily Task Toggle */}
-              <TouchableOpacity
-                style={styles.taskToggleRow}
-                onPress={() => setCreateDailyTask(!createDailyTask)}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={createDailyTask ? 'checkbox' : 'square-outline'}
-                  size={20}
-                  color={createDailyTask ? theme.colors.primary : theme.colors.textSecondary}
-                />
-                <Text style={styles.taskToggleText}>Create a daily task linked to this goal (default on)</Text>
-              </TouchableOpacity>
-
-              {/* Actions */}
-              <View style={styles.modalActions}>
-                {editingGoal && (
-                  <TouchableOpacity
-                    style={styles.deleteBtn}
-                    onPress={() => handleDeleteConfirm(editingGoal)}
-                  >
-                    <Ionicons name="trash-outline" size={16} color={theme.colors.error} />
-                  </TouchableOpacity>
-                )}
-
-                <TouchableOpacity style={styles.saveBtn} onPress={handleSaveForm}>
-                  <Text style={styles.saveBtnText}>{editingGoal ? 'Save Goal' : 'Create Goal'}</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* ── GOAL DETAIL MODAL ───────────────────────────────────────────── */}
-      {selectedGoalDetail && (
-        <Modal visible transparent animationType="slide" onRequestClose={() => setSelectedGoalDetail(null)}>
-          <View style={styles.modalOverlay}>
-            <View style={styles.detailCard}>
-              <View style={styles.modalHeader}>
-                <View style={styles.goalHeaderLeft}>
-                  <Text style={styles.goalIcon}>{selectedGoalDetail.metric?.icon || '🎯'}</Text>
-                  <View>
-                    <Text style={styles.modalTitle}>{selectedGoalDetail.goal.title}</Text>
-                    <Text style={styles.goalCategory}>
-                      {(selectedGoalDetail.goal.category || 'General')} · {(selectedGoalDetail.goal.type || 'target').toUpperCase()}
-                    </Text>
-                  </View>
-                </View>
-                <TouchableOpacity onPress={() => setSelectedGoalDetail(null)}>
-                  <Ionicons name="close-circle" size={24} color={theme.colors.textSecondary} />
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14 }}>
-                {/* Status & Pacing Box */}
-                <View style={styles.detailPacingBox}>
-                  <View style={styles.pacingHeaderRow}>
-                    <Text style={styles.pacingHighlight}>{selectedGoalDetail.progress.message}</Text>
-                    <View style={[styles.statusBadge, { backgroundColor: `${selectedGoalDetail.progress.statusColor}20` }]}>
-                      <Text style={[styles.statusBadgeText, { color: selectedGoalDetail.progress.statusColor }]}>
-                        {selectedGoalDetail.progress.status}
-                      </Text>
-                    </View>
-                  </View>
-                  <Text style={styles.pacingSub}>
-                    Required: {selectedGoalDetail.progress.requiredPerDay} {selectedGoalDetail.metric?.unit}/day · Actual Pace: {selectedGoalDetail.progress.actualPace} {selectedGoalDetail.metric?.unit}/day
-                  </Text>
-                </View>
-
-                {/* Progress Details */}
-                <View style={styles.detailStatsGrid}>
-                  <View style={styles.detailStatItem}>
-                    <Text style={styles.detailStatLabel}>Current</Text>
-                    <Text style={styles.detailStatVal}>
-                      {formatIndianNumber(selectedGoalDetail.progress.current, { unit: selectedGoalDetail.metric?.unit })}
-                    </Text>
-                  </View>
-                  <View style={styles.detailStatItem}>
-                    <Text style={styles.detailStatLabel}>Target</Text>
-                    <Text style={styles.detailStatVal}>
-                      {formatIndianNumber(selectedGoalDetail.goal.targetValue, { unit: selectedGoalDetail.metric?.unit })}
-                    </Text>
-                  </View>
-                  <View style={styles.detailStatItem}>
-                    <Text style={styles.detailStatLabel}>Projected</Text>
-                    <Text style={styles.detailStatVal}>
-                      {formatIndianNumber(selectedGoalDetail.progress.projected, { unit: selectedGoalDetail.metric?.unit })}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Quick Log Value directly into Today's Log */}
-                {selectedGoalDetail.metric && (
-                  <View style={styles.quickLogSection}>
-                    <Text style={styles.fieldLabel}>Quick Log Value for Today ({selectedGoalDetail.metric.unit})</Text>
-                    <View style={styles.quickLogRow}>
+              {showPauseSection && (
+                <View style={styles.pauseFormContainer}>
+                  <View style={styles.formRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.fieldLabel}>From (YYYY-MM-DD)</Text>
                       <TextInput
-                        style={styles.quickLogInput}
-                        keyboardType="numeric"
-                        placeholder={`e.g. 10 (${selectedGoalDetail.metric.unit})`}
-                        placeholderTextColor="#94A3B8"
-                        value={logValueInput}
-                        onChangeText={setLogValueInput}
+                        style={styles.input}
+                        value={pauseStart}
+                        onChangeText={setPauseStart}
+                        placeholder="2026-10-10"
                       />
-                      <TouchableOpacity style={styles.quickLogSubmit} onPress={handleQuickLogDetail}>
-                        <Text style={styles.quickLogSubmitText}>+ Log Value</Text>
-                      </TouchableOpacity>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.fieldLabel}>To (YYYY-MM-DD)</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={pauseEnd}
+                        onChangeText={setPauseEnd}
+                        placeholder="2026-10-15"
+                      />
                     </View>
                   </View>
-                )}
 
-                {/* Linked Tasks */}
-                <View style={styles.linkedTasksSection}>
-                  <Text style={styles.fieldLabel}>Linked Tasks</Text>
-                  {tasks.filter((t) => t.goalId === selectedGoalDetail.goal.id).length === 0 ? (
-                    <Text style={styles.emptySub}>No tasks linked directly to this goal.</Text>
-                  ) : (
-                    tasks.filter((t) => t.goalId === selectedGoalDetail.goal.id).map((t) => (
-                      <View key={t.id} style={styles.linkedTaskRow}>
-                        <Ionicons name="checkbox-outline" size={16} color={theme.colors.primary} />
-                        <Text style={styles.linkedTaskTitle}>{t.title}</Text>
-                      </View>
-                    ))
-                  )}
-                </View>
+                  <Text style={[styles.fieldLabel, { marginTop: 8 }]}>Reason (Optional)</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={pauseReason}
+                    onChangeText={setPauseReason}
+                    placeholder="e.g. Travel, Vacation, Sick"
+                  />
 
-                {/* Detail Actions: Edit / Delete */}
-                <View style={styles.modalActions}>
-                  <TouchableOpacity
-                    style={styles.deleteBtn}
-                    onPress={() => handleDeleteConfirm(selectedGoalDetail.goal)}
-                  >
-                    <Ionicons name="trash-outline" size={16} color={theme.colors.error} />
-                    <Text style={styles.deleteBtnText}>Delete</Text>
-                  </TouchableOpacity>
+                  <View style={styles.switchRow}>
+                    <Text style={styles.switchLabel}>Extend goal deadline by paused days</Text>
+                    <Switch
+                      value={extendDeadline}
+                      onValueChange={setExtendDeadline}
+                      trackColor={{ false: '#767577', true: theme.colors.primary }}
+                    />
+                  </View>
 
-                  <TouchableOpacity
-                    style={styles.saveBtn}
-                    onPress={() => handleOpenEdit(selectedGoalDetail.goal)}
-                  >
-                    <Ionicons name="pencil" size={16} color="#FFF" />
-                    <Text style={styles.saveBtnText}>Edit Goal</Text>
+                  <TouchableOpacity style={styles.savePauseBtn} onPress={handleAddPauseRange}>
+                    <Text style={styles.savePauseBtnText}>Confirm Pause Range</Text>
                   </TouchableOpacity>
                 </View>
-              </ScrollView>
+              )}
+
+              {/* Existing Pause Ranges */}
+              {selectedGoalDetail.goal.pauseRanges && selectedGoalDetail.goal.pauseRanges.length > 0 ? (
+                selectedGoalDetail.goal.pauseRanges.map((r, idx) => (
+                  <View key={r.id || `${r.startDate}-${idx}`} style={styles.pauseRangeChip}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.pauseRangeDates}>{r.startDate} → {r.endDate}</Text>
+                      {r.reason && <Text style={styles.pauseRangeReason}>{r.reason}</Text>}
+                    </View>
+                    <TouchableOpacity onPress={() => handleRemovePauseRange(r.id || `${r.startDate}-${r.endDate}`)}>
+                      <Ionicons name="close-circle" size={20} color={theme.colors.danger} />
+                    </TouchableOpacity>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.emptySubtext}>No pause dates scheduled. Goal runs every active day.</Text>
+              )}
             </View>
+
+            {/* Tasks List inside Goal */}
+            <View style={styles.detailSection}>
+              <Text style={styles.detailSectionTitle}>Goal Tasks</Text>
+              {selectedGoalDetail.tasks.length === 0 ? (
+                <Text style={styles.emptySubtext}>No tasks added to this goal yet.</Text>
+              ) : (
+                selectedGoalDetail.tasks.map((gt) => (
+                  <View key={gt.id} style={styles.subtaskDetailRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.subtaskDetailTitle}>{gt.title}</Text>
+                      <Text style={styles.subtaskDetailMeta}>
+                        {gt.kind} {gt.plannedAmount ? `(${gt.plannedAmount} ${gt.unit || ''})` : ''}
+                      </Text>
+                    </View>
+                    <TouchableOpacity onPress={() => onDeleteGoalTask(selectedGoalDetail.goal.id, gt.id)}>
+                      <Ionicons name="trash-outline" size={18} color={theme.colors.danger} />
+                    </TouchableOpacity>
+                  </View>
+                ))
+              )}
+
+              {/* Add Subtask Form */}
+              <View style={styles.addSubtaskRow}>
+                <TextInput
+                  style={styles.addSubtaskInput}
+                  placeholder="+ Add subtask to goal..."
+                  placeholderTextColor={theme.colors.textMuted}
+                  value={newSubtaskTitle}
+                  onChangeText={setNewSubtaskTitle}
+                />
+                <TouchableOpacity style={styles.addSubtaskBtn} onPress={handleAddSubtaskToGoal}>
+                  <Text style={styles.addSubtaskBtnText}>Add</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Delete Goal Button */}
+            <TouchableOpacity
+              style={styles.deleteGoalBtn}
+              onPress={() => handleDeleteGoalConfirm(selectedGoalDetail.goal.id, selectedGoalDetail.goal.title)}
+            >
+              <Ionicons name="trash-outline" size={18} color="#FFF" />
+              <Text style={styles.deleteGoalBtnText}>Delete Goal</Text>
+            </TouchableOpacity>
           </View>
-        </Modal>
-      )}
+        )}
+      </BottomSheet>
 
-      {/* Date Pickers */}
-      <DatePickerModal
-        visible={showStartDatePicker}
-        value={startDate}
-        onConfirm={(d) => { if (d) setStartDate(d); }}
-        onClose={() => setShowStartDatePicker(false)}
-      />
+      {/* QUICK LINK BOTTOM SHEET */}
+      <BottomSheet
+        visible={showAddLinkModal}
+        title="Add Quick Link"
+        subtitle="Quick launcher for Career & Work links"
+        onClose={() => setShowAddLinkModal(false)}
+        footer={
+          <View style={styles.sheetActionRow}>
+            <TouchableOpacity style={styles.sheetCancelBtn} onPress={() => setShowAddLinkModal(false)}>
+              <Text style={styles.sheetCancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.sheetSaveBtn} onPress={handleSaveQuickLink}>
+              <Text style={styles.sheetSaveText}>Save Link</Text>
+            </TouchableOpacity>
+          </View>
+        }
+      >
+        <View style={{ paddingVertical: 8 }}>
+          <Text style={styles.fieldLabel}>Link Name</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="e.g. GitHub Dashboard"
+            placeholderTextColor={theme.colors.textMuted}
+            value={linkName}
+            onChangeText={setLinkName}
+          />
 
-      <DatePickerModal
-        visible={showEndDatePicker}
-        value={endDate}
-        minDate={startDate}
-        onConfirm={(d) => { if (d) setEndDate(d); }}
-        onClose={() => setShowEndDatePicker(false)}
-      />
-
-      {/* Manage Metrics Modal */}
-      <ManageMetricsModal
-        visible={showManageMetrics}
-        metrics={metrics}
-        onSaveMetric={onSaveMetric}
-        onDeleteMetric={onDeleteMetric}
-        onClose={() => setShowManageMetrics(false)}
-      />
+          <Text style={[styles.fieldLabel, { marginTop: 12 }]}>URL</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="https://github.com/..."
+            placeholderTextColor={theme.colors.textMuted}
+            value={linkUrl}
+            onChangeText={setLinkUrl}
+            autoCapitalize="none"
+          />
+        </View>
+      </BottomSheet>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: theme.colors.background },
-  content: { padding: 16, gap: 14 },
-  topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  manageMetricsBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: theme.colors.surface,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  manageMetricsText: { ...theme.typography.captionSmall, fontWeight: '700', color: theme.colors.primary },
-  createGoalBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: theme.colors.primary,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  createGoalBtnText: { ...theme.typography.buttonSmall, color: '#FFF', fontWeight: '700' },
-  categoryRow: { marginBottom: 2 },
-  catChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    marginRight: 6,
-  },
-  catChipActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  catChipText: { ...theme.typography.captionSmall, color: theme.colors.textSecondary, fontWeight: '600' },
-  catChipTextActive: { color: '#FFF', fontWeight: '700' },
-  emptyCard: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: 16,
-    padding: 32,
-    alignItems: 'center',
-    gap: 8,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  emptyTitle: { ...theme.typography.subtitle, fontWeight: '700', color: theme.colors.textPrimary },
-  emptySub: { ...theme.typography.caption, color: theme.colors.textSecondary, textAlign: 'center' },
-
-  // Goal Card Styles
-  goalCard: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    gap: 12,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    ...theme.shadows.small,
-  },
-  goalCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  goalHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  goalIcon: { fontSize: 24 },
-  goalTitle: { ...theme.typography.bodySmall, fontWeight: '800', color: theme.colors.textPrimary },
-  goalCategory: { ...theme.typography.captionSmall, color: theme.colors.textSecondary, marginTop: 2 },
-  statusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  statusBadgeText: { ...theme.typography.captionSmall, fontWeight: '800' },
-  progressRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  currentValText: { fontSize: 20, fontWeight: '800', color: theme.colors.textPrimary },
-  targetValText: { ...theme.typography.caption, fontWeight: '600', color: theme.colors.textSecondary },
-  dualBarsContainer: { gap: 8 },
-  barItem: { gap: 3 },
-  barLabelRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  barLabel: { ...theme.typography.captionSmall, color: theme.colors.textSecondary },
-  barVal: { ...theme.typography.captionSmall, fontWeight: '700' },
-  pacingFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+  outerContainer: { flex: 1, backgroundColor: theme.colors.background },
+  stickyHeader: {
+    backgroundColor: theme.colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
     paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    zIndex: 10,
   },
-  pacingText: { ...theme.typography.captionSmall, fontWeight: '700', color: theme.colors.textPrimary },
-
-  // Modal Styles
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
-  modalScroll: { flexGrow: 1, justifyContent: 'flex-end' },
-  modalContent: {
-    backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    gap: 14,
-  },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  modalTitle: { ...theme.typography.subtitle, fontWeight: '800', color: theme.colors.textPrimary },
-  fieldGroup: { gap: 6 },
-  fieldLabel: { ...theme.typography.captionSmall, fontWeight: '700', color: theme.colors.textSecondary },
-  metricHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  newMetricLink: { ...theme.typography.captionSmall, color: theme.colors.primary, fontWeight: '700' },
-  input: {
-    backgroundColor: theme.colors.background,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    ...theme.typography.bodySmall,
-    color: theme.colors.textPrimary,
-  },
-  inputError: { borderColor: theme.colors.error },
-  errorText: { ...theme.typography.captionSmall, color: theme.colors.error },
-  pillsRow: { flexDirection: 'row', gap: 6 },
-  pill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
-    backgroundColor: theme.colors.background,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    alignItems: 'center',
-  },
-  pillActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  pillText: { ...theme.typography.captionSmall, color: theme.colors.textSecondary, fontWeight: '600' },
-  pillTextActive: { color: '#FFF', fontWeight: '700' },
-  rowTwo: { flexDirection: 'row', gap: 10 },
-  datePickerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: theme.colors.background,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  datePickerBtnText: { ...theme.typography.bodySmall, color: theme.colors.textPrimary },
-  livePreviewCard: {
-    backgroundColor: theme.colors.primaryLight,
-    borderRadius: 12,
-    padding: 12,
-    gap: 4,
-    borderWidth: 1,
-    borderColor: theme.colors.primary + '30',
-  },
-  livePreviewHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  livePreviewTitle: { fontSize: 10, fontWeight: '800', color: theme.colors.primary, letterSpacing: 0.5 },
-  livePreviewMessage: { ...theme.typography.bodySmall, fontWeight: '800', color: theme.colors.primary },
-  livePreviewSub: { ...theme.typography.captionSmall, color: theme.colors.textSecondary },
-  taskToggleRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
-  taskToggleText: { ...theme.typography.caption, color: theme.colors.textPrimary, fontWeight: '600' },
-  modalActions: { flexDirection: 'row', gap: 10, marginTop: 8 },
-  deleteBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: theme.colors.error + '15',
-    justifyContent: 'center',
-  },
-  deleteBtnText: { ...theme.typography.buttonSmall, color: theme.colors.error, fontWeight: '700' },
-  saveBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: theme.colors.primary,
-    borderRadius: 10,
-    paddingVertical: 12,
-  },
-  saveBtnText: { ...theme.typography.button, color: '#FFF', fontWeight: '700' },
-
-  // Detail Modal Styles
-  detailCard: {
-    backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    maxHeight: '85%',
-    gap: 14,
-  },
-  detailPacingBox: {
-    backgroundColor: theme.colors.background,
-    borderRadius: 12,
-    padding: 12,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  pacingHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  pacingHighlight: { ...theme.typography.bodySmall, fontWeight: '800', color: theme.colors.textPrimary },
-  pacingSub: { ...theme.typography.captionSmall, color: theme.colors.textSecondary },
-  detailStatsGrid: { flexDirection: 'row', gap: 10 },
-  detailStatItem: {
-    flex: 1,
-    backgroundColor: theme.colors.background,
-    borderRadius: 10,
-    padding: 10,
-    alignItems: 'center',
-    gap: 2,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  detailStatLabel: { ...theme.typography.captionSmall, color: theme.colors.textSecondary },
-  detailStatVal: { ...theme.typography.bodySmall, fontWeight: '800', color: theme.colors.textPrimary },
-  quickLogSection: { gap: 6 },
-  quickLogRow: { flexDirection: 'row', gap: 8 },
-  quickLogInput: {
-    flex: 1,
-    backgroundColor: theme.colors.background,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    ...theme.typography.bodySmall,
-    color: theme.colors.textPrimary,
-  },
-  quickLogSubmit: {
-    backgroundColor: theme.colors.primary,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 10,
-    justifyContent: 'center',
-  },
-  quickLogSubmitText: { ...theme.typography.buttonSmall, color: '#FFF', fontWeight: '700' },
-  linkedTasksSection: { gap: 6 },
-  linkedTaskRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: theme.colors.background,
-    padding: 8,
-    borderRadius: 8,
-  },
-  linkedTaskTitle: { ...theme.typography.bodySmall, color: theme.colors.textPrimary },
+  topHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  headerTitle: { ...theme.typography.titleLarge, color: theme.colors.text, fontWeight: '800' },
+  headerSubtitle: { ...theme.typography.bodySmall, color: theme.colors.textSecondary },
+  addGoalBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: theme.colors.primary, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20 },
+  addGoalBtnText: { ...theme.typography.button, color: '#FFF', fontWeight: '700', fontSize: 13 },
+  catScroll: { flexDirection: 'row' },
+  catChip: { paddingHorizontal: 13, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.cardBackground, marginRight: 8, borderWidth: 1, borderColor: theme.colors.border },
+  catChipActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+  catChipText: { ...theme.typography.bodySmall, color: theme.colors.textSecondary, fontSize: 12 },
+  catChipTextActive: { color: '#FFF', fontWeight: '600' },
+  container: { padding: 16 },
+  quickLinksContainer: { backgroundColor: theme.colors.cardBackground, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, marginBottom: 16 },
+  quickLinksHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  quickLinksTitle: { ...theme.typography.titleSmall, color: theme.colors.text, fontWeight: '700' },
+  addLinkText: { ...theme.typography.caption, color: theme.colors.primary, fontWeight: '700' },
+  linksRow: { flexDirection: 'row' },
+  linkChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: theme.colors.primaryLight, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, marginRight: 8 },
+  linkChipText: { ...theme.typography.bodySmall, color: theme.colors.primary, fontWeight: '600' },
+  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
+  emptyText: { ...theme.typography.bodyMedium, color: theme.colors.textMuted, fontStyle: 'italic', marginTop: 10, textAlign: 'center' },
+  emptyAddBtn: { marginTop: 14, backgroundColor: theme.colors.primaryLight, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
+  emptyAddBtnText: { ...theme.typography.button, color: theme.colors.primary, fontWeight: '700' },
+  detailContent: { paddingVertical: 4 },
+  detailSection: { backgroundColor: theme.colors.cardBackground, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, marginTop: 14 },
+  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  detailSectionTitle: { ...theme.typography.titleSmall, color: theme.colors.text, fontWeight: '700' },
+  actionToggleText: { ...theme.typography.caption, color: theme.colors.primary, fontWeight: '700' },
+  emptySubtext: { ...theme.typography.caption, color: theme.colors.textMuted, fontStyle: 'italic', marginTop: 4 },
+  pauseFormContainer: { backgroundColor: theme.colors.background, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border, marginTop: 8, marginBottom: 8 },
+  formRow: { flexDirection: 'row', gap: 10 },
+  fieldLabel: { ...theme.typography.caption, color: theme.colors.textSecondary, fontWeight: '600', marginBottom: 4 },
+  input: { backgroundColor: theme.colors.cardBackground, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, color: theme.colors.text, ...theme.typography.bodySmall },
+  switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
+  switchLabel: { ...theme.typography.bodySmall, color: theme.colors.text, flex: 1, marginRight: 10 },
+  savePauseBtn: { backgroundColor: theme.colors.primary, paddingVertical: 9, borderRadius: 8, alignItems: 'center', marginTop: 12 },
+  savePauseBtnText: { ...theme.typography.button, color: '#FFF', fontWeight: '700', fontSize: 13 },
+  pauseRangeChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.colors.background, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.border, marginTop: 6 },
+  pauseRangeDates: { ...theme.typography.bodySmall, color: theme.colors.text, fontWeight: '600' },
+  pauseRangeReason: { ...theme.typography.caption, color: theme.colors.textSecondary },
+  subtaskDetailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.colors.border + '40' },
+  subtaskDetailTitle: { ...theme.typography.bodyMedium, color: theme.colors.text },
+  subtaskDetailMeta: { ...theme.typography.caption, color: theme.colors.textSecondary },
+  addSubtaskRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  addSubtaskInput: { flex: 1, backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, color: theme.colors.text },
+  addSubtaskBtn: { backgroundColor: theme.colors.primary, paddingHorizontal: 12, justifyContent: 'center', borderRadius: 8 },
+  addSubtaskBtnText: { ...theme.typography.caption, color: '#FFF', fontWeight: '700' },
+  deleteGoalBtn: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, backgroundColor: theme.colors.danger, paddingVertical: 12, borderRadius: 10, marginTop: 16 },
+  deleteGoalBtnText: { ...theme.typography.button, color: '#FFF', fontWeight: '700' },
+  sheetDoneBtn: { backgroundColor: theme.colors.primary, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  sheetDoneBtnText: { ...theme.typography.button, color: '#FFF', fontWeight: '700' },
+  sheetActionRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12 },
+  sheetCancelBtn: { paddingVertical: 10, paddingHorizontal: 16 },
+  sheetCancelText: { ...theme.typography.bodyMedium, color: theme.colors.textSecondary },
+  sheetSaveBtn: { backgroundColor: theme.colors.primary, paddingVertical: 10, paddingHorizontal: 20, borderRadius: 10 },
+  sheetSaveText: { ...theme.typography.button, color: '#FFF', fontWeight: '700' },
 });
+

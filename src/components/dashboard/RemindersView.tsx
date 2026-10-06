@@ -27,14 +27,14 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Reminder, ScheduleType, QuietHours } from '@/types/reminders';
-import { Task } from '@/types/tasks';
+import { Task, GoalTask } from '@/types/tasks';
 import { TimePickerModal, formatISTTime } from '@/components/ui/TimePickerModal';
 import theme from '@/constants/theme';
 import { toastService } from '@/services/toastService';
 
 interface Props {
   reminders: Reminder[];
-  tasks: Task[];
+  tasks: (Task | GoalTask)[];
   quietHours: QuietHours;
   onSaveReminder: (reminder: Reminder) => Promise<void>;
   onDeleteReminder: (id: string) => Promise<void>;
@@ -385,17 +385,20 @@ export const RemindersView: React.FC<Props> = ({
                       None
                     </Text>
                   </TouchableOpacity>
-                  {tasks.map((t) => (
-                    <TouchableOpacity
-                      key={t.id}
-                      style={[styles.pill, linkedTaskId === t.id && styles.pillActive]}
-                      onPress={() => setLinkedTaskId(t.id)}
-                    >
-                      <Text style={[styles.pillText, linkedTaskId === t.id && styles.pillTextActive]}>
-                        {t.title}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
+                  {tasks.map((t) => {
+                    const prefix = 'goalId' in t ? '🎯 ' : '📝 ';
+                    return (
+                      <TouchableOpacity
+                        key={t.id}
+                        style={[styles.pill, linkedTaskId === t.id && styles.pillActive]}
+                        onPress={() => setLinkedTaskId(t.id)}
+                      >
+                        <Text style={[styles.pillText, linkedTaskId === t.id && styles.pillTextActive]}>
+                          {prefix}{t.title}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </ScrollView>
               </View>
 

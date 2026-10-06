@@ -16,11 +16,15 @@ export const typography = {
   heading1: { fontSize: 24, fontWeight: '700' as const, letterSpacing: -0.3, fontFamily },
   heading2: { fontSize: 20, fontWeight: '700' as const, letterSpacing: -0.2, fontFamily },
   heading3: { fontSize: 17, fontWeight: '600' as const, fontFamily },
+  titleLarge: { fontSize: 22, fontWeight: '700' as const, letterSpacing: -0.3, fontFamily },
+  titleMedium: { fontSize: 18, fontWeight: '600' as const, letterSpacing: -0.2, fontFamily },
+  titleSmall: { fontSize: 15, fontWeight: '600' as const, fontFamily },
 
   // ─── Body ───────────────────────────────────────────────
   title: { fontSize: 17, fontWeight: '600' as const, fontFamily },
   subtitle: { fontSize: 15, fontWeight: '500' as const, lineHeight: 20, fontFamily },
   body: { fontSize: 15, fontWeight: '400' as const, lineHeight: 22, fontFamily },
+  bodyMedium: { fontSize: 15, fontWeight: '500' as const, lineHeight: 20, fontFamily },
   bodySmall: { fontSize: 13, fontWeight: '400' as const, lineHeight: 18, fontFamily },
 
   // ─── Captions & Labels ─────────────────────────────────

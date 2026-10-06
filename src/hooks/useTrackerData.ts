@@ -124,8 +124,8 @@ export function useTrackerData(): TrackerDataResult {
       setCurrentLog(activeLog);
 
       // Schedule rolling notifications
-      const syncedReminders = await syncLocalScheduledReminders(fetchedReminders, activeLog, fetchedQH, userName);
-      setReminders(syncedReminders);
+      await syncLocalScheduledReminders(fetchedReminders, activeLog as any, fetchedQH);
+      setReminders(fetchedReminders);
 
       // Calculations
       setWeeklyStats(calculateWeeklyStats(fetchedLogs));
@@ -156,9 +156,8 @@ export function useTrackerData(): TrackerDataResult {
       setCurrentLog(finalLog);
       setLogs(updatedLogs);
 
-      // Smart condition re-evaluate & reschedule notifications!
-      const syncedReminders = await syncLocalScheduledReminders(reminders, finalLog, quietHours, userName);
-      setReminders(syncedReminders);
+      await syncLocalScheduledReminders(reminders, finalLog as any, quietHours);
+      setReminders(reminders);
 
       setWeeklyStats(calculateWeeklyStats(updatedLogs));
       setLifeScore(calculateLifeScore(goals, updatedLogs));
@@ -221,8 +220,8 @@ export function useTrackerData(): TrackerDataResult {
     setSaving(true);
     try {
       const updatedList = await saveReminderService(reminder, userName);
-      const synced = await syncLocalScheduledReminders(updatedList, currentLog, quietHours, userName);
-      setReminders(synced);
+      await syncLocalScheduledReminders(updatedList, currentLog as any, quietHours);
+      setReminders(updatedList);
     } catch (err) {
       console.error('Error saving reminder:', err);
     } finally {
@@ -234,8 +233,8 @@ export function useTrackerData(): TrackerDataResult {
     setSaving(true);
     try {
       const updatedList = await removeReminderService(reminderId, userName);
-      const synced = await syncLocalScheduledReminders(updatedList, currentLog, quietHours, userName);
-      setReminders(synced);
+      await syncLocalScheduledReminders(updatedList, currentLog as any, quietHours);
+      setReminders(updatedList);
     } catch (err) {
       console.error('Error deleting reminder:', err);
     } finally {
@@ -246,8 +245,8 @@ export function useTrackerData(): TrackerDataResult {
   const saveQuietHours = async (qh: QuietHours) => {
     setQuietHoursState(qh);
     await saveQuietHoursService(qh);
-    const synced = await syncLocalScheduledReminders(reminders, currentLog, qh, userName);
-    setReminders(synced);
+    await syncLocalScheduledReminders(reminders, currentLog as any, qh);
+    setReminders(reminders);
   };
 
   const sendTestNotification = async (reminder: Reminder) => {
@@ -256,7 +255,7 @@ export function useTrackerData(): TrackerDataResult {
 
   const goalProgressList = goals.map((goal) => ({
     goal,
-    progress: calculateGoalProgress(goal, logs),
+    progress: calculateGoalProgress(goal, logs as any),
   }));
 
   const exportDataJSON = () => {

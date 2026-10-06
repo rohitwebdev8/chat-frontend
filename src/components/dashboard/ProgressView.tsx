@@ -1,13 +1,3 @@
-/**
- * ProgressView — PACE Progress Analytics & Reviews.
- *
- * Features:
- *  1. Top Summary Cards: Today %, Last-7-day Avg %, Current Streak, Best Day.
- *  2. Heatmap: Colored by completion % (legend: 0%, 1-49%, 50-79%, 80-100%), tap for Day Detail sheet.
- *  3. Weekly Table: With Done % column and CSV export.
- *  4. What's Behind Card: Only rendered when behindGoals.length > 0.
- *  5. Weekly Review: Collapsed by default with toggle.
- */
 import React, { useState, useMemo } from 'react';
 import {
   View,
@@ -15,572 +5,437 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  TextInput,
-  Share,
-  Platform,
   Modal,
+  TextInput,
+  Alert,
+  Platform,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { Goal, GoalCalculatedProgress } from '@/types/goals';
 import { DailyLog } from '@/types/logs';
-import { Goal, GoalCalculatedProgress, WeeklyReview } from '@/types/goals';
-import { MetricDefinition } from '@/types/metrics';
+import { WeeklyReview } from '@/types/goals';
+import { formatLocalDate } from '@/types/tasks';
 import { formatIndianNumber } from '@/lib/goals/computeGoalProgress';
 import theme from '@/constants/theme';
-import { toastService } from '@/services/toastService';
 
-interface Props {
+interface ProgressViewProps {
   allLogs: Record<string, DailyLog>;
   goals: Goal[];
-  goalProgressList: { goal: Goal; progress: GoalCalculatedProgress; metric?: MetricDefinition }[];
-  metrics?: MetricDefinition[];
+  goalProgressList: { goal: Goal; progress: GoalCalculatedProgress }[];
   reviews: WeeklyReview[];
   onSaveReview: (r: WeeklyReview) => Promise<void>;
   onExportCSV: () => string;
-  scrollPaddingBottom?: number;
+  scrollPaddingBottom: number;
 }
 
-type DateRangeOption = '7' | '14' | '30';
-
-export const ProgressView: React.FC<Props> = ({
+export const ProgressView: React.FC<ProgressViewProps> = ({
   allLogs,
   goals,
   goalProgressList,
-  metrics,
   reviews,
   onSaveReview,
   onExportCSV,
-  scrollPaddingBottom = 100,
+  scrollPaddingBottom,
 }) => {
-  const insets = useSafeAreaInsets();
-  const [selectedMonth, setSelectedMonth] = useState<Date>(() => new Date());
   const [selectedDayDate, setSelectedDayDate] = useState<string | null>(null);
-  const [tableRange, setTableRange] = useState<DateRangeOption>('7');
-  const [reviewCollapsed, setReviewCollapsed] = useState(true);
 
-  const activeMetrics = useMemo(() => {
-    return (metrics || []).filter((m: MetricDefinition) => !m.archived);
-  }, [metrics]);
+  // Review editing state
+  const [editingWins, setEditingWins] = useState('');
+  const [editingMisses, setEditingMisses] = useState('');
+  const [reflectionsText, setReflectionsText] = useState('');
 
-  // ── Summary Cards Calculations ──────────────────────────────────────────
-  const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
-  const todayLog = allLogs[todayStr];
-  const todayDoneCount = todayLog?.completedTaskIds?.length || 0;
-  const todayPct = todayDoneCount > 0 ? Math.min(100, todayDoneCount * 25) : 0;
+  const todayStr = useMemo(() => formatLocalDate(new Date()), []);
+  const activeGoals = useMemo(() => goals.filter((g) => g.status === 'active'), [goals]);
 
-  const last7DaysAvgPct = useMemo(() => {
-    let totalPct = 0;
-    let count = 0;
-    const now = new Date();
+  // 1. Summary Cards: Today %, 7-day Average, Best Streak
+  const last7DaysStats = useMemo(() => {
+    let sumPct = 0;
+    let daysWithLogs = 0;
+    let bestStreak = 0;
+
     for (let i = 0; i < 7; i++) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
-      const log = allLogs[dateStr];
-      const tasksDone = log?.completedTaskIds?.length || 0;
-      totalPct += Math.min(100, tasksDone * 25);
-      count++;
+      const dt = new Date();
+      dt.setDate(dt.getDate() - i);
+      const dStr = formatLocalDate(dt);
+      const log = allLogs[dStr];
+
+      if (log) {
+        const doneCount = Object.keys(log.done || {}).length;
+        if (doneCount > 0) {
+          sumPct += Math.min(100, doneCount * 25);
+          daysWithLogs++;
+        }
+      }
     }
-    return count > 0 ? Math.round(totalPct / count) : 0;
+
+    goalProgressList.forEach((g) => {
+      if (g.progress.streakBest > bestStreak) bestStreak = g.progress.streakBest;
+    });
+
+    const todayDone = Object.keys(allLogs[todayStr]?.done || {}).length;
+    const todayPct = Math.min(100, todayDone * 25);
+    const avg7dPct = daysWithLogs > 0 ? Math.round(sumPct / 7) : 0;
+
+    return { todayPct, avg7dPct, bestStreak };
+  }, [allLogs, goalProgressList, todayStr]);
+
+  // 2. Heatmap Days Generation (last 28 days)
+  const heatmapDays = useMemo(() => {
+    const list = [];
+    for (let i = 27; i >= 0; i--) {
+      const dt = new Date();
+      dt.setDate(dt.getDate() - i);
+      const dateStr = formatLocalDate(dt);
+      const log = allLogs[dateStr];
+      const doneCount = Object.keys(log?.done || {}).length;
+
+      let color = theme.colors.border;
+      if (doneCount >= 4) color = '#10B981';
+      else if (doneCount >= 2) color = '#34D399';
+      else if (doneCount === 1) color = '#A7F3D0';
+
+      list.push({ dateStr, dayNum: dt.getDate(), doneCount, color, log });
+    }
+    return list;
   }, [allLogs]);
 
-  // Streak & Best Day
-  const { streak, bestDay } = useMemo<{ streak: number; bestDay: { date: string; pct: number } | null }>(() => {
-    const dates = Object.keys(allLogs).sort();
-    let currentStreak = 0;
-    let best: { date: string; pct: number } | null = null;
+  // 3. Weekly Table Data (Last 7 Days)
+  const weeklyTableRows = useMemo(() => {
+    const rows = [];
+    const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-    dates.forEach((d) => {
-      const log = allLogs[d];
-      const tasksDone = log?.completedTaskIds?.length || 0;
-      const pct = Math.min(100, tasksDone * 25);
-      if (pct >= 50) currentStreak++;
-      else currentStreak = 0;
+    for (let i = 0; i < 7; i++) {
+      const dt = new Date();
+      dt.setDate(dt.getDate() - i);
+      const dateStr = formatLocalDate(dt);
+      const log = allLogs[dateStr];
 
-      if (!best || pct > best.pct) {
-        best = { date: d, pct };
+      const doneCount = Object.keys(log?.done || {}).length;
+      const donePct = Math.min(100, doneCount * 25);
+      const dayLabel = `${DAY_NAMES[dt.getDay()]} ${String(dt.getDate()).padStart(2, '0')}`;
+
+      // Value for each active goal on this date
+      const goalValues = activeGoals.map((g) => {
+        let valText = '-';
+        if (log?.entries?.[g.id] !== undefined && log?.entries?.[g.id] !== null) {
+          valText = formatIndianNumber(log.entries[g.id], { unit: g.unit });
+        } else if (log?.done) {
+          // Check if any subtask done for this goal
+          const subtaskDone = Object.keys(log.done).some((tid) => tid.includes(g.id));
+          if (subtaskDone) valText = '✓ Done';
+        }
+        return { goalId: g.id, valText };
+      });
+
+      rows.push({
+        dateStr,
+        dayLabel,
+        donePct,
+        goalValues,
+      });
+    }
+    return rows;
+  }, [allLogs, activeGoals]);
+
+  // Selected Day Detail Log
+  const selectedDayLog = selectedDayDate ? allLogs[selectedDayDate] : null;
+
+  // Auto-drafted Weekly Wins and Misses
+  const currentWeekKey = `weekly_${todayStr.slice(0, 7)}`;
+  const existingReview = reviews.find((r) => r.id === currentWeekKey);
+
+  const autoDraft = useMemo(() => {
+    const wins: string[] = [];
+    const misses: string[] = [];
+
+    goalProgressList.forEach(({ goal, progress }) => {
+      if (progress.status === 'Completed' || progress.status === 'Ahead') {
+        wins.push(`On track with ${goal.title} (${progress.valuePct}%)`);
+      } else if (progress.status === 'Behind') {
+        misses.push(`Behind pace on ${goal.title} (${progress.valuePct}%)`);
       }
     });
 
-    return { streak: currentStreak, bestDay: best };
-  }, [allLogs]);
+    return {
+      wins: existingReview?.wins?.join('\n') || (wins.length > 0 ? wins.join('\n') : 'Completed daily consistency targets!'),
+      misses: existingReview?.misses?.join('\n') || (misses.length > 0 ? misses.join('\n') : 'Need more focus on weekend habits.'),
+      reflections: existingReview?.reflections || '',
+    };
+  }, [goalProgressList, existingReview]);
 
-  // ── Weekly Review Form State ─────────────────────────────────────────────
-  const currentWeekKey = useMemo(() => getISOWeekKey(new Date()), []);
-  const existingReview = useMemo(
-    () => reviews.find((r) => r.weekKey === currentWeekKey),
-    [reviews, currentWeekKey]
-  );
+  const handleSaveWeeklyReview = async () => {
+    const winsArr = (editingWins || autoDraft.wins).split('\n').filter(Boolean);
+    const missesArr = (editingMisses || autoDraft.misses).split('\n').filter(Boolean);
 
-  const [reviewWins, setReviewWins] = useState(existingReview?.wins?.join('\n') || '');
-  const [reviewMisses, setReviewMisses] = useState(existingReview?.misses?.join('\n') || '');
-  const [reviewReflections, setReviewReflections] = useState(existingReview?.reflections || '');
-  const [reviewNextFocus, setReviewNextFocus] = useState(existingReview?.nextWeekFocus || '');
-  const [reviewMood, setReviewMood] = useState<number>(existingReview?.moodRating || 3);
-  const [reviewEnergy, setReviewEnergy] = useState<number>(existingReview?.energyRating || 3);
-  const [isSavingReview, setIsSavingReview] = useState(false);
+    const reviewDoc: WeeklyReview = {
+      id: currentWeekKey,
+      wins: winsArr,
+      misses: missesArr,
+      reflections: reflectionsText || autoDraft.reflections,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
 
-  // ── Heatmap Calculations ────────────────────────────────────────────────
-  const monthData = useMemo(() => {
-    const year = selectedMonth.getFullYear();
-    const month = selectedMonth.getMonth();
-    const firstDayIndex = new Date(year, month, 1).getDay();
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-    const days: { dateStr: string; dayNum: number; log?: DailyLog; pct: number }[] = [];
-
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const log = allLogs[dateStr];
-      const tasksDone = log?.completedTaskIds?.length || 0;
-      const pct = Math.min(100, tasksDone * 25);
-      days.push({ dateStr, dayNum: d, log, pct });
-    }
-
-    return { firstDayIndex, daysInMonth, days };
-  }, [selectedMonth, allLogs]);
-
-  // ── Table Calculations ──────────────────────────────────────────────────
-  const tableRows = useMemo(() => {
-    const daysCount = parseInt(tableRange, 10);
-    const rows: { dateStr: string; log?: DailyLog; pct: number }[] = [];
-    const today = new Date();
-
-    for (let i = daysCount - 1; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
-      const log = allLogs[dateStr];
-      const tasksDone = log?.completedTaskIds?.length || 0;
-      const pct = Math.min(100, tasksDone * 25);
-      rows.push({ dateStr, log, pct });
-    }
-
-    return rows;
-  }, [tableRange, allLogs]);
-
-  // ── "What's Behind" List ────────────────────────────────────────────────
-  const behindGoals = useMemo(() => {
-    return goalProgressList.filter(({ progress }) =>
-      ['Behind', 'Off track', 'Slightly behind'].includes(progress.statusLabel)
-    );
-  }, [goalProgressList]);
-
-  // Handlers
-  const handleExportCSV = async () => {
-    try {
-      const csvData = onExportCSV();
-      if (Platform.OS === 'web') {
-        toastService.show('CSV Exported!', 'success');
-      } else {
-        await Share.share({ message: csvData, title: 'PACE Logs Export' });
-      }
-    } catch {
-      toastService.show('Failed to export CSV', 'error');
-    }
+    await onSaveReview(reviewDoc);
+    Alert.alert('Success', 'Weekly review saved!');
   };
 
-  const handleSaveReview = async () => {
-    setIsSavingReview(true);
-    try {
-      const reviewToSave: WeeklyReview = {
-        id: existingReview?.id || `weekly_${currentWeekKey}`,
-        weekKey: currentWeekKey,
-        wins: reviewWins.split('\n').filter((w) => w.trim().length > 0),
-        misses: reviewMisses.split('\n').filter((m) => m.trim().length > 0),
-        reflections: reviewReflections.trim(),
-        nextWeekFocus: reviewNextFocus.trim(),
-        moodRating: reviewMood,
-        energyRating: reviewEnergy,
-        createdAt: existingReview?.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      await onSaveReview(reviewToSave);
-      toastService.show('Weekly review saved!', 'success');
-    } catch {
-      toastService.show('Failed to save review', 'error');
-    } finally {
-      setIsSavingReview(false);
+  const handleExportCSVPress = () => {
+    const csvContent = onExportCSV();
+    if (Platform.OS === 'web' && typeof (globalThis as any).Blob !== 'undefined') {
+      const blob = new (globalThis as any).Blob([csvContent], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = (globalThis as any).document.createElement('a');
+      a.href = url;
+      a.download = `PACE_export_${todayStr}.csv`;
+      a.click();
+    } else {
+      Alert.alert('CSV Exported', csvContent.slice(0, 300) + '...\n(CSV generated successfully)');
     }
   };
-
-  const selectedDayLog = selectedDayDate ? allLogs[selectedDayDate] : null;
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={[styles.content, { paddingBottom: scrollPaddingBottom }]}
-      showsVerticalScrollIndicator={false}
-    >
-      {/* ── SECTION 1: TOP SUMMARY CARDS ─────────────────────────────── */}
-      <View style={styles.summaryGrid}>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryVal}>{todayPct}%</Text>
-          <Text style={styles.summaryLabel}>Today's Done</Text>
+    <ScrollView contentContainerStyle={[styles.container, { paddingBottom: scrollPaddingBottom }]}>
+      {/* Top Header & Export CSV */}
+      <View style={styles.topHeader}>
+        <View>
+          <Text style={styles.headerTitle}>Progress & Analytics</Text>
+          <Text style={styles.headerSubtitle}>Pure derived performance insights</Text>
         </View>
 
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryVal}>{last7DaysAvgPct}%</Text>
-          <Text style={styles.summaryLabel}>7-Day Avg</Text>
+        <TouchableOpacity style={styles.exportBtn} onPress={handleExportCSVPress}>
+          <Ionicons name="download-outline" size={18} color={theme.colors.primary} />
+          <Text style={styles.exportBtnText}>CSV Export</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* SUMMARY CARDS */}
+      <View style={styles.statsRow}>
+        <View style={styles.statCard}>
+          <Text style={styles.statVal}>{last7DaysStats.todayPct}%</Text>
+          <Text style={styles.statLabel}>Today Done</Text>
         </View>
 
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryVal}>🔥 {streak}</Text>
-          <Text style={styles.summaryLabel}>Day Streak</Text>
+        <View style={styles.statCard}>
+          <Text style={styles.statVal}>{last7DaysStats.avg7dPct}%</Text>
+          <Text style={styles.statLabel}>7-Day Average</Text>
         </View>
 
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryVal}>{bestDay ? `${bestDay.pct}%` : '--'}</Text>
-          <Text style={styles.summaryLabel}>Best Day</Text>
+        <View style={styles.statCard}>
+          <Text style={styles.statVal}>🔥 {last7DaysStats.bestStreak}</Text>
+          <Text style={styles.statLabel}>Best Streak</Text>
         </View>
       </View>
 
-      {/* ── SECTION 2: HEATMAP ────────────────────────────────────────── */}
-      <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          <View style={styles.cardTitleRow}>
-            <Ionicons name="calendar-outline" size={20} color={theme.colors.primary} />
-            <Text style={styles.cardTitle}>Completion Heatmap</Text>
-          </View>
-          <View style={styles.monthNav}>
-            <TouchableOpacity onPress={() => setSelectedMonth(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() - 1, 1))}>
-              <Ionicons name="chevron-back" size={18} color={theme.colors.textPrimary} />
-            </TouchableOpacity>
-            <Text style={styles.monthLabel}>
-              {selectedMonth.toLocaleString('default', { month: 'short', year: 'numeric' })}
-            </Text>
-            <TouchableOpacity onPress={() => setSelectedMonth(new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 1))}>
-              <Ionicons name="chevron-forward" size={18} color={theme.colors.textPrimary} />
-            </TouchableOpacity>
-          </View>
-        </View>
+      {/* WEEKLY TABLE (Columns: Date, Done %, and Active Goals) */}
+      <View style={styles.cardSection}>
+        <Text style={styles.cardSectionTitle}>Weekly Overview Table</Text>
+        <Text style={styles.cardSectionSubtitle}>Daily performance across active goals (last 7 days)</Text>
 
-        {/* Legend */}
-        <View style={styles.legendRow}>
-          <Text style={styles.legendTitle}>Legend:</Text>
-          <View style={styles.legendItem}><View style={[styles.legendBox, { backgroundColor: '#F0F2F5' }]} /><Text style={styles.legendText}>0%</Text></View>
-          <View style={styles.legendItem}><View style={[styles.legendBox, { backgroundColor: '#C6F6D5' }]} /><Text style={styles.legendText}>1-49%</Text></View>
-          <View style={styles.legendItem}><View style={[styles.legendBox, { backgroundColor: '#48BB78' }]} /><Text style={styles.legendText}>50-79%</Text></View>
-          <View style={styles.legendItem}><View style={[styles.legendBox, { backgroundColor: '#2F855A' }]} /><Text style={styles.legendText}>80-100%</Text></View>
-        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={true} style={{ marginTop: 8 }}>
+          <View style={styles.tableContainer}>
+            {/* Table Header */}
+            <View style={styles.tableRowHeader}>
+              <Text style={[styles.tableHeaderCell, { width: 85 }]}>Date</Text>
+              <Text style={[styles.tableHeaderCell, { width: 70 }]}>Done %</Text>
+              {activeGoals.map((g) => (
+                <Text key={g.id} style={[styles.tableHeaderCell, { width: 110 }]} numberOfLines={1}>
+                  {g.title}
+                </Text>
+              ))}
+            </View>
 
-        {/* Grid */}
-        <View style={styles.calendarGridHeader}>
-          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => (
-            <Text key={i} style={styles.dayHeaderCell}>{day}</Text>
-          ))}
-        </View>
-
-        <View style={styles.calendarGrid}>
-          {Array.from({ length: monthData.firstDayIndex }).map((_, i) => (
-            <View key={`empty-${i}`} style={styles.calendarCellEmpty} />
-          ))}
-
-          {monthData.days.map(({ dateStr, dayNum, pct }) => {
-            const isSelected = selectedDayDate === dateStr;
-            const bgStyle = getHeatmapColor(pct);
-
-            return (
+            {/* Table Rows */}
+            {weeklyTableRows.map((row) => (
               <TouchableOpacity
-                key={dateStr}
-                style={[styles.calendarCell, { backgroundColor: bgStyle }, isSelected && styles.cellSelected]}
-                onPress={() => setSelectedDayDate(isSelected ? null : dateStr)}
+                key={row.dateStr}
+                style={styles.tableRow}
+                onPress={() => setSelectedDayDate(row.dateStr)}
               >
-                <Text style={[styles.cellText, pct >= 50 && styles.cellTextLight]}>{dayNum}</Text>
+                <Text style={[styles.tableCell, { width: 85, fontWeight: '600' }]}>{row.dayLabel}</Text>
+                <Text style={[styles.tableCell, { width: 70, color: row.donePct > 0 ? theme.colors.success : theme.colors.textMuted }]}>
+                  {row.donePct}%
+                </Text>
+                {row.goalValues.map((gv) => (
+                  <Text key={gv.goalId} style={[styles.tableCell, { width: 110 }]} numberOfLines={1}>
+                    {gv.valText}
+                  </Text>
+                ))}
               </TouchableOpacity>
-            );
-          })}
-        </View>
-      </View>
-
-      {/* ── SECTION 3: WHAT'S BEHIND (ONLY SHOWN IF > 0) ───────────────── */}
-      {behindGoals.length > 0 && (
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <View style={styles.cardTitleRow}>
-              <Ionicons name="alert-circle-outline" size={20} color={theme.colors.warning} />
-              <Text style={styles.cardTitle}>What's Behind</Text>
-            </View>
-            <Text style={styles.badgeCount}>{behindGoals.length}</Text>
-          </View>
-
-          {behindGoals.map(({ goal, progress, metric }) => (
-            <View key={goal.id} style={styles.behindRow}>
-              <View style={styles.behindHeader}>
-                <Text style={styles.behindGoalTitle}>{goal.title}</Text>
-                <View style={[styles.statusBadge, { backgroundColor: progress.statusColor + '20' }]}>
-                  <Text style={[styles.statusBadgeText, { color: progress.statusColor }]}>
-                    {progress.status}
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.behindSubtext}>
-                {progress.message} · Current: {formatIndianNumber(progress.current, { unit: metric?.unit })} (Target: {formatIndianNumber(goal.targetValue, { unit: metric?.unit })})
-              </Text>
-            </View>
-          ))}
-        </View>
-      )}
-
-      {/* ── SECTION 4: WEEKLY TABLE WITH DONE % ───────────────────────── */}
-      <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          <View style={styles.cardTitleRow}>
-            <Ionicons name="list-outline" size={20} color={theme.colors.primary} />
-            <Text style={styles.cardTitle}>Weekly Log Table</Text>
-          </View>
-
-          <View style={styles.tableActions}>
-            <View style={styles.rangeSelector}>
-              {(['7', '14', '30'] as DateRangeOption[]).map((r) => (
-                <TouchableOpacity
-                  key={r}
-                  style={[styles.rangeBtn, tableRange === r && styles.rangeBtnActive]}
-                  onPress={() => setTableRange(r)}
-                >
-                  <Text style={[styles.rangeBtnText, tableRange === r && styles.rangeBtnTextActive]}>
-                    {r}d
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <TouchableOpacity onPress={handleExportCSV} style={styles.exportBtn}>
-              <Ionicons name="download-outline" size={16} color={theme.colors.primary} />
-              <Text style={styles.exportBtnText}>CSV</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.tableContainer}>
-          <View>
-            <View style={styles.trHeader}>
-              <Text style={[styles.th, { width: 80 }]}>Date</Text>
-              <Text style={[styles.th, { width: 70 }]}>Done %</Text>
-              <Text style={[styles.th, { width: 70 }]}>Tasks</Text>
-              {activeMetrics.map((m: MetricDefinition) => (
-                <Text key={m.id} style={[styles.th, { width: 80 }]}>{m.name}</Text>
-              ))}
-            </View>
-
-            {tableRows.map(({ dateStr, log, pct }) => (
-              <View key={dateStr} style={styles.tr}>
-                <Text style={[styles.td, styles.tdDate, { width: 80 }]}>{dateStr.slice(5)}</Text>
-                <Text style={[styles.td, { width: 70, fontWeight: '700', color: theme.colors.primary }]}>
-                  {pct}%
-                </Text>
-                <Text style={[styles.td, { width: 70 }]}>
-                  {log && log.completedTaskIds?.length > 0 ? `✅ ${log.completedTaskIds.length}` : '--'}
-                </Text>
-                {activeMetrics.map((m: MetricDefinition) => {
-                  const val = log?.metrics?.[m.id];
-                  const hasVal = val !== undefined && val !== null && val > 0;
-                  return (
-                    <Text key={m.id} style={[styles.td, { width: 80 }]}>
-                      {hasVal ? `${formatIndianNumber(val)} ${m.unit !== '₹' ? m.unit : ''}` : '--'}
-                    </Text>
-                  );
-                })}
-              </View>
             ))}
           </View>
         </ScrollView>
       </View>
 
-      {/* ── SECTION 5: WEEKLY REVIEW (COLLAPSED BY DEFAULT) ───────────── */}
-      <View style={styles.card}>
-        <TouchableOpacity
-          style={styles.cardHeader}
-          onPress={() => setReviewCollapsed(!reviewCollapsed)}
-        >
-          <View style={styles.cardTitleRow}>
-            <Ionicons name="create-outline" size={20} color={theme.colors.primary} />
-            <Text style={styles.cardTitle}>Weekly Review ({currentWeekKey})</Text>
-          </View>
-          <Ionicons
-            name={reviewCollapsed ? 'chevron-down' : 'chevron-up'}
-            size={20}
-            color={theme.colors.textSecondary}
-          />
-        </TouchableOpacity>
+      {/* HEATMAP */}
+      <View style={styles.cardSection}>
+        <Text style={styles.cardSectionTitle}>Completion Heatmap (Last 28 Days)</Text>
+        <Text style={styles.cardSectionSubtitle}>Tap a day to inspect completed tasks & entries</Text>
 
-        {!reviewCollapsed && (
-          <View style={styles.reviewForm}>
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>🏆 Wins & Highlights</Text>
-              <TextInput
-                style={styles.textArea}
-                multiline
-                placeholder="e.g. Completed 10k steps 5 days in a row..."
-                value={reviewWins}
-                onChangeText={setReviewWins}
-              />
-            </View>
-
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>⚠️ Misses & Bottlenecks</Text>
-              <TextInput
-                style={styles.textArea}
-                multiline
-                placeholder="e.g. Skipped Thursday workout..."
-                value={reviewMisses}
-                onChangeText={setReviewMisses}
-              />
-            </View>
-
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>💡 Reflections</Text>
-              <TextInput
-                style={styles.textArea}
-                multiline
-                placeholder="e.g. Prepare meals on Sunday..."
-                value={reviewReflections}
-                onChangeText={setReviewReflections}
-              />
-            </View>
-
+        <View style={styles.heatmapGrid}>
+          {heatmapDays.map((item) => (
             <TouchableOpacity
-              style={[styles.saveBtn, isSavingReview && styles.btnDisabled]}
-              onPress={handleSaveReview}
-              disabled={isSavingReview}
+              key={item.dateStr}
+              style={[styles.heatmapSquare, { backgroundColor: item.color }]}
+              onPress={() => setSelectedDayDate(item.dateStr)}
             >
-              <Text style={styles.saveBtnText}>
-                {isSavingReview ? 'Saving...' : 'Save Weekly Review'}
-              </Text>
+              <Text style={styles.heatmapDayText}>{item.dayNum}</Text>
             </TouchableOpacity>
-          </View>
+          ))}
+        </View>
+      </View>
+
+      {/* PER-CATEGORY SUMMARY */}
+      <View style={styles.cardSection}>
+        <Text style={styles.cardSectionTitle}>Per-Category Summary</Text>
+        {goals.length === 0 ? (
+          <Text style={styles.emptyText}>No goals created yet.</Text>
+        ) : (
+          goalProgressList.map(({ goal, progress }) => (
+            <View key={goal.id} style={styles.categoryRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.categoryGoalTitle}>{goal.title}</Text>
+                <Text style={styles.categoryBadge}>{goal.category} · {goal.type.replace('_', ' ')}</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={[styles.categoryPct, { color: progress.statusColor }]}>{progress.valuePct}%</Text>
+                <Text style={styles.categoryStatus}>{progress.status}</Text>
+              </View>
+            </View>
+          ))
         )}
       </View>
 
-      {/* Day Detail Sheet Modal */}
-      {selectedDayDate && (
-        <Modal visible transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={[styles.modalSheet, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
-              <View style={styles.sheetHeader}>
-                <Text style={styles.sheetTitle}>📅 Day Detail — {selectedDayDate}</Text>
-                <TouchableOpacity onPress={() => setSelectedDayDate(null)}>
-                  <Ionicons name="close-circle" size={24} color={theme.colors.textSecondary} />
-                </TouchableOpacity>
-              </View>
+      {/* WEEKLY REVIEW AT BOTTOM */}
+      <View style={styles.cardSection}>
+        <Text style={styles.cardSectionTitle}>Weekly Review (Auto-Drafted)</Text>
 
-              {selectedDayLog ? (
-                <View style={styles.sheetContent}>
-                  <Text style={styles.sheetText}>✅ Tasks Completed: {selectedDayLog.completedTaskIds?.length || 0}</Text>
-                  <Text style={styles.sheetText}>👟 Steps: {selectedDayLog.metrics?.steps || 0}</Text>
-                  <Text style={styles.sheetText}>💧 Water: {selectedDayLog.metrics?.water || 0}L</Text>
-                  <Text style={styles.sheetText}>🔥 Calories: {selectedDayLog.metrics?.calories || 0} kcal</Text>
-                  <Text style={styles.sheetText}>🥩 Protein: {selectedDayLog.metrics?.protein || 0}g</Text>
-                  {selectedDayLog.note ? (
-                    <Text style={styles.sheetNote}>Note: "{selectedDayLog.note}"</Text>
-                  ) : null}
-                </View>
-              ) : (
-                <Text style={styles.emptySheetText}>No logs recorded for this day.</Text>
-              )}
+        <Text style={styles.fieldLabel}>🏆 Wins</Text>
+        <TextInput
+          style={styles.reviewInput}
+          multiline
+          numberOfLines={3}
+          value={editingWins !== '' ? editingWins : autoDraft.wins}
+          onChangeText={setEditingWins}
+        />
+
+        <Text style={styles.fieldLabel}>⚠️ Misses & Focus</Text>
+        <TextInput
+          style={styles.reviewInput}
+          multiline
+          numberOfLines={3}
+          value={editingMisses !== '' ? editingMisses : autoDraft.misses}
+          onChangeText={setEditingMisses}
+        />
+
+        <Text style={styles.fieldLabel}>📝 Reflections & Next Week Plan</Text>
+        <TextInput
+          style={styles.reviewInput}
+          multiline
+          numberOfLines={2}
+          placeholder="Reflect on your pace..."
+          placeholderTextColor={theme.colors.textMuted}
+          value={reflectionsText !== '' ? reflectionsText : autoDraft.reflections}
+          onChangeText={setReflectionsText}
+        />
+
+        <TouchableOpacity style={styles.saveReviewBtn} onPress={handleSaveWeeklyReview}>
+          <Text style={styles.saveReviewBtnText}>Save Weekly Review</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* DAY DETAIL MODAL */}
+      <Modal visible={Boolean(selectedDayDate)} transparent animationType="fade" onRequestClose={() => setSelectedDayDate(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Day Detail ({selectedDayDate})</Text>
+              <TouchableOpacity onPress={() => setSelectedDayDate(null)}>
+                <Ionicons name="close" size={20} color={theme.colors.text} />
+              </TouchableOpacity>
             </View>
+
+            {selectedDayLog ? (
+              <ScrollView style={{ maxHeight: 300, marginVertical: 12 }}>
+                <Text style={styles.detailHeading}>Done Tasks:</Text>
+                {Object.keys(selectedDayLog.done || {}).length === 0 ? (
+                  <Text style={styles.emptyText}>No tasks completed on this date.</Text>
+                ) : (
+                  Object.entries(selectedDayLog.done || {}).map(([tId, val]) => (
+                    <View key={tId} style={styles.logDetailItem}>
+                      <Ionicons name="checkmark-circle" size={16} color={theme.colors.primary} />
+                      <Text style={styles.logDetailText}>
+                        Task: {tId.slice(0, 16)} {typeof val === 'number' ? `(Amount: ${val})` : ''}
+                      </Text>
+                    </View>
+                  ))
+                )}
+
+                <Text style={[styles.detailHeading, { marginTop: 12 }]}>Direct Goal Entries:</Text>
+                {Object.keys(selectedDayLog.entries || {}).length === 0 ? (
+                  <Text style={styles.emptyText}>No direct goal entries logged.</Text>
+                ) : (
+                  Object.entries(selectedDayLog.entries || {}).map(([gId, val]) => (
+                    <View key={gId} style={styles.logDetailItem}>
+                      <Ionicons name="analytics" size={16} color={theme.colors.secondary} />
+                      <Text style={styles.logDetailText}>Goal Value: {val}</Text>
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            ) : (
+              <Text style={styles.emptyText}>No log found for this date.</Text>
+            )}
+
+            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setSelectedDayDate(null)}>
+              <Text style={styles.modalCloseText}>Close</Text>
+            </TouchableOpacity>
           </View>
-        </Modal>
-      )}
+        </View>
+      </Modal>
     </ScrollView>
   );
 };
 
-function getISOWeekKey(d: Date): string {
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const dayNum = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-  const weekNo = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-  return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
-}
-
-function getHeatmapColor(pct: number): string {
-  if (pct <= 0) return '#F0F2F5';
-  if (pct < 50) return '#C6F6D5';
-  if (pct < 80) return '#48BB78';
-  return '#2F855A';
-}
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: theme.colors.background },
-  content: { padding: 16, gap: 16 },
-  summaryGrid: { flexDirection: 'row', gap: 10 },
-  summaryCard: {
-    flex: 1,
-    backgroundColor: theme.colors.surface,
-    borderRadius: 14,
-    padding: 12,
-    alignItems: 'center',
-    gap: 4,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    ...theme.shadows.small,
-  },
-  summaryVal: { fontSize: 18, fontWeight: '800', color: theme.colors.primary },
-  summaryLabel: { ...theme.typography.captionSmall, color: theme.colors.textSecondary, fontWeight: '600' },
-  card: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    gap: 12,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    ...theme.shadows.small,
-  },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  cardTitle: { ...theme.typography.subtitle, fontWeight: '700', color: theme.colors.textPrimary },
-  monthNav: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  monthLabel: { ...theme.typography.captionSmall, fontWeight: '700', color: theme.colors.textPrimary },
-  legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  legendTitle: { ...theme.typography.captionSmall, fontWeight: '600', color: theme.colors.textSecondary },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  legendBox: { width: 12, height: 12, borderRadius: 3 },
-  legendText: { ...theme.typography.captionSmall, color: theme.colors.textSecondary },
-  calendarGridHeader: { flexDirection: 'row', justifyContent: 'space-between' },
-  dayHeaderCell: { width: '13%', textAlign: 'center', ...theme.typography.captionSmall, color: theme.colors.textSecondary, fontWeight: '700' },
-  calendarGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
-  calendarCellEmpty: { width: '13%', aspectRatio: 1 },
-  calendarCell: { width: '13%', aspectRatio: 1, borderRadius: 6, justifyContent: 'center', alignItems: 'center' },
-  cellSelected: { borderWidth: 2, borderColor: theme.colors.primary },
-  cellText: { ...theme.typography.captionSmall, fontWeight: '700', color: theme.colors.textPrimary },
-  cellTextLight: { color: '#FFF' },
-  badgeCount: { ...theme.typography.captionSmall, fontWeight: '700', backgroundColor: theme.colors.warning + '20', color: theme.colors.warning, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
-  behindRow: { padding: 10, backgroundColor: theme.colors.background, borderRadius: 10, gap: 4 },
-  behindHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  behindGoalTitle: { ...theme.typography.bodySmall, fontWeight: '700', color: theme.colors.textPrimary },
-  statusBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
-  statusBadgeText: { ...theme.typography.captionSmall, fontWeight: '700' },
-  behindSubtext: { ...theme.typography.captionSmall, color: theme.colors.textSecondary },
-  tableActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  rangeSelector: { flexDirection: 'row', backgroundColor: theme.colors.background, borderRadius: 8, padding: 2 },
-  rangeBtn: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  rangeBtnActive: { backgroundColor: theme.colors.surface },
-  rangeBtnText: { ...theme.typography.captionSmall, color: theme.colors.textSecondary },
-  rangeBtnTextActive: { fontWeight: '700', color: theme.colors.primary },
-  exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: theme.colors.primaryLight },
-  exportBtnText: { ...theme.typography.captionSmall, fontWeight: '700', color: theme.colors.primary },
-  tableContainer: { marginTop: 4 },
-  trHeader: { flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.colors.border },
-  th: { ...theme.typography.captionSmall, fontWeight: '700', color: theme.colors.textSecondary },
-  tr: { flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.colors.border + '50' },
-  td: { ...theme.typography.captionSmall, color: theme.colors.textPrimary },
-  tdDate: { fontWeight: '600' },
-  reviewForm: { gap: 10, marginTop: 8 },
-  formGroup: { gap: 4 },
-  formLabel: { ...theme.typography.bodySmall, fontWeight: '600', color: theme.colors.textPrimary },
-  textArea: { backgroundColor: theme.colors.background, borderRadius: 10, padding: 10, minHeight: 60, ...theme.typography.bodySmall, color: theme.colors.textPrimary, borderWidth: 1, borderColor: theme.colors.border, textAlignVertical: 'top' },
-  saveBtn: { backgroundColor: theme.colors.primary, borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginTop: 4 },
-  saveBtnText: { ...theme.typography.buttonSmall, color: '#FFF', fontWeight: '700' },
-  btnDisabled: { opacity: 0.6 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalSheet: { backgroundColor: theme.colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, gap: 10 },
-  sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  sheetTitle: { ...theme.typography.subtitle, fontWeight: '700', color: theme.colors.textPrimary },
-  sheetContent: { gap: 4 },
-  sheetText: { ...theme.typography.bodySmall, color: theme.colors.textSecondary },
-  sheetNote: { ...theme.typography.caption, fontStyle: 'italic', color: theme.colors.textPrimary, marginTop: 4 },
-  emptySheetText: { ...theme.typography.bodySmall, color: theme.colors.textSecondary },
+  container: { padding: 16 },
+  topHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  headerTitle: { ...theme.typography.titleLarge, color: theme.colors.text, fontWeight: '800' },
+  headerSubtitle: { ...theme.typography.bodySmall, color: theme.colors.textSecondary },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: theme.colors.primaryLight, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20 },
+  exportBtnText: { ...theme.typography.button, color: theme.colors.primary, fontWeight: '700' },
+  statsRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+  statCard: { flex: 1, backgroundColor: theme.colors.cardBackground, padding: 14, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: theme.colors.border },
+  statVal: { ...theme.typography.titleLarge, color: theme.colors.text, fontWeight: '800' },
+  statLabel: { ...theme.typography.caption, color: theme.colors.textSecondary, marginTop: 2 },
+  cardSection: { backgroundColor: theme.colors.cardBackground, padding: 16, borderRadius: 14, borderWidth: 1, borderColor: theme.colors.border, marginBottom: 16 },
+  cardSectionTitle: { ...theme.typography.titleSmall, color: theme.colors.text, fontWeight: '700' },
+  cardSectionSubtitle: { ...theme.typography.caption, color: theme.colors.textSecondary, marginBottom: 12 },
+  tableContainer: { minWidth: '100%' },
+  tableRowHeader: { flexDirection: 'row', backgroundColor: theme.colors.background, paddingVertical: 8, paddingHorizontal: 6, borderRadius: 6 },
+  tableHeaderCell: { ...theme.typography.caption, color: theme.colors.textSecondary, fontWeight: '700' },
+  tableRow: { flexDirection: 'row', paddingVertical: 10, paddingHorizontal: 6, borderBottomWidth: 1, borderBottomColor: theme.colors.border + '40', alignItems: 'center' },
+  tableCell: { ...theme.typography.bodySmall, color: theme.colors.text },
+  heatmapGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  heatmapSquare: { width: 36, height: 36, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
+  heatmapDayText: { ...theme.typography.caption, color: '#FFF', fontWeight: '700' },
+  categoryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: theme.colors.border + '50' },
+  categoryGoalTitle: { ...theme.typography.bodyMedium, color: theme.colors.text, fontWeight: '600' },
+  categoryBadge: { ...theme.typography.caption, color: theme.colors.textSecondary },
+  categoryPct: { ...theme.typography.titleSmall, fontWeight: '700' },
+  categoryStatus: { ...theme.typography.caption, color: theme.colors.textMuted },
+  fieldLabel: { ...theme.typography.bodySmall, color: theme.colors.text, fontWeight: '600', marginTop: 10 },
+  reviewInput: { backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, padding: 10, color: theme.colors.text, marginTop: 4, ...theme.typography.bodySmall, textAlignVertical: 'top' },
+  saveReviewBtn: { backgroundColor: theme.colors.primary, paddingVertical: 12, borderRadius: 8, alignItems: 'center', marginTop: 14 },
+  saveReviewBtnText: { ...theme.typography.button, color: '#FFF', fontWeight: '700' },
+  emptyText: { ...theme.typography.bodySmall, color: theme.colors.textMuted, fontStyle: 'italic', marginVertical: 8 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalContent: { width: '100%', maxWidth: 360, backgroundColor: theme.colors.cardBackground, borderRadius: 14, padding: 20 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  modalTitle: { ...theme.typography.titleMedium, color: theme.colors.text, fontWeight: '700' },
+  detailHeading: { ...theme.typography.bodySmall, color: theme.colors.text, fontWeight: '700' },
+  logDetailItem: { flexDirection: 'row', alignItems: 'center', gap: 6, marginVertical: 4 },
+  logDetailText: { ...theme.typography.caption, color: theme.colors.textSecondary },
+  modalCloseBtn: { marginTop: 12, backgroundColor: theme.colors.border, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  modalCloseText: { ...theme.typography.button, color: theme.colors.text },
 });

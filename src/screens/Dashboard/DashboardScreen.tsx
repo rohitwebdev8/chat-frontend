@@ -9,7 +9,6 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { useSelector } from 'react-redux';
 import { selectIsSynced } from '@/store/slices/syncSlice';
 import { usePersonalOS } from '@/hooks/usePersonalOS';
@@ -17,7 +16,6 @@ import { ScreenHeader } from '@/components/ui/ScreenHeader';
 import { BottomTabBar } from '@/components/ui/BottomTabBar';
 import type { TabItem } from '@/components/ui/BottomTabBar';
 
-// Tab views — will be fully implemented in Phase 2 & 3
 import { TodayView } from '@/components/dashboard/TodayView';
 import { GoalsView } from '@/components/dashboard/GoalsView';
 import { ProgressView } from '@/components/dashboard/ProgressView';
@@ -62,7 +60,7 @@ export const DashboardScreen: React.FC = () => {
       {data.loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text style={styles.loadingText}>Loading…</Text>
+          <Text style={styles.loadingText}>Loading PACE…</Text>
         </View>
       ) : (
         <KeyboardAvoidingView
@@ -77,14 +75,14 @@ export const DashboardScreen: React.FC = () => {
           {currentTab === 'today' && (
             <TodayView
               todayLog={data.todayLog}
-              todayTasks={data.todayTasks}
-              goals={data.goals}
+              todayStandaloneTasks={data.todayStandaloneTasks}
               goalProgressList={data.goalProgressList}
-              metrics={data.metrics}
-              onUpdateLog={data.updateTodayLog}
-              onSaveTask={data.saveTask}
-              onDeleteTask={data.deleteTask}
+              onSaveStandaloneTask={data.saveStandaloneTask}
+              onDeleteStandaloneTask={data.deleteStandaloneTask}
               onToggleTask={data.toggleTask}
+              onLogGoalValue={data.logGoalValue}
+              onApplyPaceSuggestion={data.applyPaceSuggestion}
+              onUpdateLog={data.updateTodayLog}
               scrollPaddingBottom={scrollPaddingBottom}
             />
           )}
@@ -93,15 +91,16 @@ export const DashboardScreen: React.FC = () => {
             <GoalsView
               goals={data.goals}
               goalProgressList={data.goalProgressList}
-              metrics={data.metrics}
-              tasks={data.tasks}
               allLogs={data.allLogs}
-              todayLog={data.todayLog}
+              links={data.links}
               onSaveGoal={data.saveGoal}
               onDeleteGoal={data.deleteGoal}
-              onSaveMetric={data.saveMetric}
-              onDeleteMetric={data.deleteMetric}
-              onUpdateTodayLog={data.updateTodayLog}
+              onSaveGoalTask={data.saveGoalTask}
+              onDeleteGoalTask={data.deleteGoalTask}
+              onLogGoalValue={data.logGoalValue}
+              onApplyPaceSuggestion={data.applyPaceSuggestion}
+              onSaveLink={data.saveLink}
+              onDeleteLink={data.deleteLink}
               scrollPaddingBottom={scrollPaddingBottom}
             />
           )}
@@ -111,7 +110,6 @@ export const DashboardScreen: React.FC = () => {
               allLogs={data.allLogs}
               goals={data.goals}
               goalProgressList={data.goalProgressList}
-              metrics={data.metrics}
               reviews={data.reviews}
               onSaveReview={data.saveReview}
               onExportCSV={data.exportCSV}
@@ -122,7 +120,7 @@ export const DashboardScreen: React.FC = () => {
           {currentTab === 'reminders' && (
             <RemindersView
               reminders={data.reminders}
-              tasks={data.tasks}
+              tasks={data.allUnifiedTasks}
               quietHours={data.quietHours}
               onSaveReminder={data.saveReminder}
               onDeleteReminder={data.deleteReminder}

@@ -1,60 +1,62 @@
 /**
  * personalOS.ts — Single source of truth for all Personal OS Firestore reads/writes.
- *
- * Path convention: users/{auth.uid}/{collection}/{docId}
- * UID comes from Firebase Auth (anonymous sign-in, persisted via AsyncStorage).
- * Offline persistence is enabled in config.ts (persistentLocalCache).
- * Every write emits a pendingWrite inc/dec for the "Synced" badge (syncSlice).
- * Every catch shows a toast (via toastService).
  */
 
 import {
   collection,
   doc,
   getDocs,
+  getDoc,
   onSnapshot,
   setDoc,
   deleteDoc,
   query,
   orderBy,
+  runTransaction,
   Unsubscribe,
 } from 'firebase/firestore';
 import { db } from './config';
 import { getUID } from './authService';
 import { Goal } from '@/types/goals';
-import { Task } from '@/types/tasks';
+import { Task, GoalTask } from '@/types/tasks';
 import { DailyLog, createEmptyLog } from '@/types/logs';
+import { QuickLink, SEED_CAREER_LINKS } from '@/types/links';
 import { Reminder, QuietHours } from '@/types/reminders';
 import { WeeklyReview } from '@/types/goals';
 import { store } from '@/store';
 import { pendingWriteStart, pendingWriteDone } from '@/store/slices/syncSlice';
 import { showToast } from '@/services/toastService';
 
-// ── Path helpers (getUID() is synchronous after ensureAuth()) ─────────────
+// ── Local Date helper (no UTC toISOString) ──────────────────────────────────
+export function getLocalDateString(d: Date = new Date()): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// ── Path helpers ───────────────────────────────────────────────────────────
 const goalsCol = () => collection(db, 'users', getUID(), 'goals');
-const tasksCol = () => collection(db, 'users', getUID(), 'tasks');
+const standaloneTasksCol = () => collection(db, 'users', getUID(), 'tasks');
+const goalTasksCol = (goalId: string) => collection(db, 'users', getUID(), 'goals', goalId, 'tasks');
 const logsCol = () => collection(db, 'users', getUID(), 'logs');
+const linksCol = () => collection(db, 'users', getUID(), 'links');
 const remindersCol = () => collection(db, 'users', getUID(), 'reminders');
 const reviewsCol = () => collection(db, 'users', getUID(), 'reviews');
-const metricsCol = () => collection(db, 'users', getUID(), 'metrics');
 
 const goalDoc = (id: string) => doc(db, 'users', getUID(), 'goals', id);
-const taskDoc = (id: string) => doc(db, 'users', getUID(), 'tasks', id);
+const standaloneTaskDoc = (id: string) => doc(db, 'users', getUID(), 'tasks', id);
+const goalTaskDoc = (goalId: string, taskId: string) => doc(db, 'users', getUID(), 'goals', goalId, 'tasks', taskId);
 const logDoc = (date: string) => doc(db, 'users', getUID(), 'logs', date);
+const linkDoc = (id: string) => doc(db, 'users', getUID(), 'links', id);
 const reminderDoc = (id: string) => doc(db, 'users', getUID(), 'reminders', id);
 const reviewDoc = (id: string) => doc(db, 'users', getUID(), 'reviews', id);
-const metricDoc = (id: string) => doc(db, 'users', getUID(), 'metrics', id);
 
-// ── Strip undefined fields (Firestore rejects undefined values) ──────────────
 function stripUndefined<T extends object>(obj: T): T {
   return JSON.parse(JSON.stringify(obj, (_key, val) => (val === undefined ? null : val)));
 }
 
-// ── Generic write wrapper ─────────────────────────────────────────────────
-async function safeWrite<T>(
-  label: string,
-  writeFn: () => Promise<T>
-): Promise<T | null> {
+async function safeWrite<T>(label: string, writeFn: () => Promise<T>): Promise<T | null> {
   store.dispatch(pendingWriteStart());
   try {
     const result = await writeFn();
@@ -69,23 +71,10 @@ async function safeWrite<T>(
 }
 
 // ── GOALS ─────────────────────────────────────────────────────────────────
-
-export async function fetchGoals(): Promise<Goal[]> {
-  try {
-    const snap = await getDocs(goalsCol());
-    return snap.docs.map((d) => d.data() as Goal);
-  } catch (err) {
-    showToast('Failed to load goals.', 'error');
-    return [];
-  }
-}
-
 export function subscribeGoals(onChange: (goals: Goal[]) => void): Unsubscribe {
   return onSnapshot(goalsCol(), (snap) => {
     onChange(snap.docs.map((d) => d.data() as Goal));
-  }, (err) => {
-    console.error('[personalOS] subscribeGoals:', err);
-  });
+  }, (err) => console.error('[personalOS] subscribeGoals:', err));
 }
 
 export async function upsertGoal(goal: Goal): Promise<void> {
@@ -95,41 +84,148 @@ export async function upsertGoal(goal: Goal): Promise<void> {
 }
 
 export async function removeGoal(goalId: string): Promise<void> {
-  await safeWrite(`removeGoal(${goalId})`, () => deleteDoc(goalDoc(goalId)));
+  // Deleting a goal deletes its subtasks and unlinks reminders
+  await safeWrite(`removeGoal(${goalId})`, async () => {
+    const tasksSnap = await getDocs(goalTasksCol(goalId));
+    const taskIds = new Set(tasksSnap.docs.map((d) => d.id));
+
+    // Delete subtasks
+    for (const tDoc of tasksSnap.docs) {
+      await deleteDoc(tDoc.ref);
+    }
+    // Delete goal doc
+    await deleteDoc(goalDoc(goalId));
+
+    // Unlink any reminders referencing these subtasks
+    if (taskIds.size > 0) {
+      const remsSnap = await getDocs(remindersCol());
+      for (const rDoc of remsSnap.docs) {
+        const rem = rDoc.data() as Reminder;
+        if (rem.taskId && taskIds.has(rem.taskId)) {
+          await setDoc(rDoc.ref, { taskId: null, updatedAt: new Date().toISOString() }, { merge: true });
+        }
+      }
+    }
+  });
 }
 
-// ── TASKS ─────────────────────────────────────────────────────────────────
+/**
+ * Idempotent Goal Auto-Completion using Firestore runTransaction.
+ * Only completes if status is currently 'active'.
+ */
+export async function autoCompleteGoal(goalId: string): Promise<boolean> {
+  return (
+    (await safeWrite(`autoCompleteGoal(${goalId})`, async () => {
+      const gDocRef = goalDoc(goalId);
 
-export async function fetchTasks(): Promise<Task[]> {
-  try {
-    const snap = await getDocs(query(tasksCol(), orderBy('createdAt', 'asc')));
-    return snap.docs.map((d) => d.data() as Task);
-  } catch (err) {
-    showToast('Failed to load tasks.', 'error');
-    return [];
-  }
+      let didComplete = false;
+      await runTransaction(db, async (transaction) => {
+        const snap = await transaction.get(gDocRef);
+        if (!snap.exists()) return;
+
+        const currentData = snap.data() as Goal;
+        if (currentData.status !== 'active') {
+          return; // Already done or paused; no-op
+        }
+
+        // Mark goal status done
+        transaction.update(gDocRef, {
+          status: 'done',
+          updatedAt: new Date().toISOString(),
+        });
+        didComplete = true;
+      });
+
+      if (didComplete) {
+        // Deactivate all tasks under this goal
+        const tasksSnap = await getDocs(goalTasksCol(goalId));
+        for (const tDoc of tasksSnap.docs) {
+          await setDoc(tDoc.ref, { active: false, updatedAt: new Date().toISOString() }, { merge: true });
+        }
+      }
+
+      return didComplete;
+    })) ?? false
+  );
 }
 
-export function subscribeTasks(onChange: (tasks: Task[]) => void): Unsubscribe {
+// ── STANDALONE TASKS ──────────────────────────────────────────────────────
+export function subscribeStandaloneTasks(onChange: (tasks: Task[]) => void): Unsubscribe {
   return onSnapshot(
-    query(tasksCol(), orderBy('createdAt', 'asc')),
+    query(standaloneTasksCol(), orderBy('createdAt', 'asc')),
     (snap) => onChange(snap.docs.map((d) => d.data() as Task)),
-    (err) => console.error('[personalOS] subscribeTasks:', err)
+    (err) => console.error('[personalOS] subscribeStandaloneTasks:', err)
   );
 }
 
-export async function upsertTask(task: Task): Promise<void> {
-  await safeWrite(`upsertTask(${task.id})`, () =>
-    setDoc(taskDoc(task.id), stripUndefined(task), { merge: true })
+export async function upsertStandaloneTask(task: Task): Promise<void> {
+  await safeWrite(`upsertStandaloneTask(${task.id})`, () =>
+    setDoc(standaloneTaskDoc(task.id), stripUndefined(task), { merge: true })
   );
 }
 
-export async function removeTask(taskId: string): Promise<void> {
-  await safeWrite(`removeTask(${taskId})`, () => deleteDoc(taskDoc(taskId)));
+export async function removeStandaloneTask(taskId: string): Promise<void> {
+  await safeWrite(`removeStandaloneTask(${taskId})`, async () => {
+    await deleteDoc(standaloneTaskDoc(taskId));
+
+    // Remove task link from any reminders referencing this taskId
+    const remsSnap = await getDocs(remindersCol());
+    for (const rDoc of remsSnap.docs) {
+      const rem = rDoc.data() as Reminder;
+      if (rem.taskId === taskId) {
+        await setDoc(rDoc.ref, { taskId: null, updatedAt: new Date().toISOString() }, { merge: true });
+      }
+    }
+  });
 }
 
-// ── LOGS ──────────────────────────────────────────────────────────────────
+// Compatibility exports for legacy tasksCol
+export const subscribeTasks = subscribeStandaloneTasks;
+export const upsertTask = upsertStandaloneTask;
+export const removeTask = removeStandaloneTask;
 
+// ── GOAL TASKS ────────────────────────────────────────────────────────────
+export function subscribeGoalTasks(goalId: string, onChange: (tasks: GoalTask[]) => void): Unsubscribe {
+  return onSnapshot(
+    goalTasksCol(goalId),
+    (snap) => onChange(snap.docs.map((d) => d.data() as GoalTask)),
+    (err) => console.error(`[personalOS] subscribeGoalTasks(${goalId}):`, err)
+  );
+}
+
+export async function fetchAllGoalTasks(goals: Goal[]): Promise<GoalTask[]> {
+  const allGoalTasks: GoalTask[] = [];
+  for (const g of goals) {
+    try {
+      const snap = await getDocs(goalTasksCol(g.id));
+      snap.docs.forEach((d) => allGoalTasks.push(d.data() as GoalTask));
+    } catch { }
+  }
+  return allGoalTasks;
+}
+
+export async function upsertGoalTask(task: GoalTask): Promise<void> {
+  await safeWrite(`upsertGoalTask(${task.id})`, () =>
+    setDoc(goalTaskDoc(task.goalId, task.id), stripUndefined(task), { merge: true })
+  );
+}
+
+export async function removeGoalTask(goalId: string, taskId: string): Promise<void> {
+  await safeWrite(`removeGoalTask(${taskId})`, async () => {
+    await deleteDoc(goalTaskDoc(goalId, taskId));
+
+    // Remove task link from any reminders referencing this taskId
+    const remsSnap = await getDocs(remindersCol());
+    for (const rDoc of remsSnap.docs) {
+      const rem = rDoc.data() as Reminder;
+      if (rem.taskId === taskId) {
+        await setDoc(rDoc.ref, { taskId: null, updatedAt: new Date().toISOString() }, { merge: true });
+      }
+    }
+  });
+}
+
+// ── DAILY LOGS ────────────────────────────────────────────────────────────
 export async function fetchLogs(): Promise<Record<string, DailyLog>> {
   try {
     const snap = await getDocs(logsCol());
@@ -155,10 +251,7 @@ export async function fetchLog(date: string): Promise<DailyLog> {
   }
 }
 
-export function subscribeLog(
-  date: string,
-  onChange: (log: DailyLog) => void
-): Unsubscribe {
+export function subscribeLog(date: string, onChange: (log: DailyLog) => void): Unsubscribe {
   return onSnapshot(logDoc(date), (snap) => {
     onChange(snap.exists() ? (snap.data() as DailyLog) : createEmptyLog(date));
   }, (err) => console.error('[personalOS] subscribeLog:', err));
@@ -170,9 +263,31 @@ export async function upsertLog(log: DailyLog): Promise<void> {
   );
 }
 
-// ── REMINDERS ─────────────────────────────────────────────────────────────
+// ── QUICK LINKS ───────────────────────────────────────────────────────────
+export function subscribeLinks(onChange: (links: QuickLink[]) => void): Unsubscribe {
+  return onSnapshot(linksCol(), async (snap) => {
+    if (snap.empty) {
+      for (const link of SEED_CAREER_LINKS) {
+        await setDoc(linkDoc(link.id), link, { merge: true });
+      }
+      onChange(SEED_CAREER_LINKS);
+    } else {
+      onChange(snap.docs.map((d) => d.data() as QuickLink));
+    }
+  }, (err) => console.error('[personalOS] subscribeLinks:', err));
+}
 
-// QuietHours lives as a special doc under reminders collection (single doc)
+export async function upsertLink(link: QuickLink): Promise<void> {
+  await safeWrite(`upsertLink(${link.id})`, () =>
+    setDoc(linkDoc(link.id), stripUndefined(link), { merge: true })
+  );
+}
+
+export async function removeLink(linkId: string): Promise<void> {
+  await safeWrite(`removeLink(${linkId})`, () => deleteDoc(linkDoc(linkId)));
+}
+
+// ── REMINDERS ─────────────────────────────────────────────────────────────
 const QUIET_HOURS_DOC = '__quiet_hours__';
 
 export async function fetchReminders(): Promise<Reminder[]> {
@@ -225,46 +340,7 @@ export async function upsertQuietHours(qh: QuietHours): Promise<void> {
   );
 }
 
-export async function toggleTaskCompletion(taskId: string, done: boolean, dateStr?: string): Promise<void> {
-  const d = dateStr || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
-  const log = await fetchLog(d);
-  const completedTaskIds = done
-    ? Array.from(new Set([...(log.completedTaskIds || []), taskId]))
-    : (log.completedTaskIds || []).filter((id) => id !== taskId);
-
-  await upsertLog({
-    ...log,
-    completedTaskIds,
-    updatedAt: new Date().toISOString(),
-  });
-}
-
-// Namespace export for object-style usage
-export const personalOS = {
-  subscribeGoals,
-  upsertGoal,
-  removeGoal,
-  subscribeTasks,
-  upsertTask,
-  removeTask,
-  fetchLogs,
-  fetchLog,
-  subscribeLog,
-  upsertLog,
-  toggleTaskCompletion,
-  fetchReminders,
-  subscribeReminders,
-  upsertReminder,
-  removeReminder,
-  fetchQuietHours,
-  upsertQuietHours,
-  fetchReviews,
-  upsertReview,
-};
-
-
 // ── REVIEWS ───────────────────────────────────────────────────────────────
-
 export async function fetchReviews(): Promise<WeeklyReview[]> {
   try {
     const snap = await getDocs(reviewsCol());
@@ -281,57 +357,45 @@ export async function upsertReview(review: WeeklyReview): Promise<void> {
   );
 }
 
-// ── METRICS ───────────────────────────────────────────────────────────────
-
-import { MetricDefinition, DEFAULT_METRICS } from '@/types/metrics';
-
-export async function fetchMetrics(): Promise<MetricDefinition[]> {
-  try {
-    const snap = await getDocs(metricsCol());
-    if (snap.empty) {
-      // Seed default metrics
-      await seedDefaultMetrics();
-      return DEFAULT_METRICS;
-    }
-    return snap.docs.map((d) => d.data() as MetricDefinition).filter((m) => !m.archived);
-  } catch (err) {
-    console.error('[personalOS] fetchMetrics:', err);
-    return DEFAULT_METRICS;
+export async function toggleTaskCompletion(taskId: string, done: boolean, dateStr?: string): Promise<void> {
+  const d = dateStr || getLocalDateString();
+  const log = await fetchLog(d);
+  const newDone = { ...(log.done || {}) };
+  if (done) {
+    newDone[taskId] = true;
+  } else {
+    delete newDone[taskId];
   }
-}
-
-export function subscribeMetrics(onChange: (metrics: MetricDefinition[]) => void): Unsubscribe {
-  return onSnapshot(metricsCol(), async (snap) => {
-    if (snap.empty) {
-      await seedDefaultMetrics();
-      onChange(DEFAULT_METRICS);
-    } else {
-      const list = snap.docs.map((d) => d.data() as MetricDefinition).filter((m) => !m.archived);
-      onChange(list);
-    }
-  }, (err) => {
-    console.error('[personalOS] subscribeMetrics:', err);
+  await upsertLog({
+    ...log,
+    done: newDone,
+    updatedAt: new Date().toISOString(),
   });
 }
 
-export async function upsertMetric(metric: MetricDefinition): Promise<void> {
-  await safeWrite(`upsertMetric(${metric.id})`, () =>
-    setDoc(metricDoc(metric.id), stripUndefined({ ...metric, updatedAt: new Date().toISOString() }), { merge: true })
-  );
-}
-
-export async function removeMetric(metricId: string): Promise<void> {
-  // We archive custom metrics or delete non-builtIns
-  await safeWrite(`removeMetric(${metricId})`, () =>
-    setDoc(metricDoc(metricId), { archived: true, updatedAt: new Date().toISOString() }, { merge: true })
-  );
-}
-
-export async function seedDefaultMetrics(): Promise<void> {
-  for (const def of DEFAULT_METRICS) {
-    try {
-      await setDoc(metricDoc(def.id), { ...def, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { merge: true });
-    } catch { }
-  }
-}
-
+// Export personalOS namespace for backwards compatibility
+export const personalOS = {
+  subscribeGoals,
+  upsertGoal,
+  removeGoal,
+  autoCompleteGoal,
+  subscribeTasks,
+  upsertTask,
+  removeTask,
+  subscribeStandaloneTasks,
+  upsertStandaloneTask,
+  removeStandaloneTask,
+  fetchLogs,
+  fetchLog,
+  subscribeLog,
+  upsertLog,
+  toggleTaskCompletion,
+  fetchReminders,
+  subscribeReminders,
+  upsertReminder,
+  removeReminder,
+  fetchQuietHours,
+  upsertQuietHours,
+  fetchReviews,
+  upsertReview,
+};

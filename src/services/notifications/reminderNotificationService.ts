@@ -4,7 +4,6 @@ import { Reminder, QuietHours } from '@/types/reminders';
 import { DailyLog } from '@/types/logs';
 import { calculateRollingWindowSchedule } from '@/lib/reminders/scheduler';
 import { personalOS } from '@/services/firebase/personalOS';
-import { getUID } from '@/services/firebase/authService';
 
 const REMINDER_CHANNEL_ID = 'reminders';
 const REMINDER_CATEGORY_ID = 'REMINDER_ACTIONS';
@@ -13,7 +12,7 @@ let responseListenerRegistered = false;
 
 /**
  * Initializes dedicated Android Notification Channel "reminders" and Action Categories.
- * Registers notification action response handler for "DONE", "SNOOZE", and "ADD_TASK".
+ * Registers notification action response handler for "DONE", "SNOOZE".
  */
 export async function initReminderNotificationService() {
   try {
@@ -23,55 +22,46 @@ export async function initReminderNotificationService() {
         importance: Notifications.AndroidImportance.HIGH,
         vibrationPattern: [0, 250, 250, 250],
         lightColor: '#007AFF',
-        sound: 'default',
       });
     }
 
-    // Register Notification Action Categories: "Done", "Snooze 1h"
     await Notifications.setNotificationCategoryAsync(REMINDER_CATEGORY_ID, [
       {
         identifier: 'DONE',
-        buttonTitle: '✅ Done',
-        options: { isAuthenticationRequired: false },
+        buttonTitle: 'Done ✅',
+        options: { isDestructive: false, isAuthenticationRequired: false },
       },
       {
-        identifier: 'SNOOZE',
-        buttonTitle: '⏰ Snooze 1h',
-        options: { isAuthenticationRequired: false },
+        identifier: 'SNOOZE_60',
+        buttonTitle: 'Snooze 1 hr ⏰',
+        options: { isDestructive: false, isAuthenticationRequired: false },
       },
     ]);
 
-    // Register listener only once
     if (!responseListenerRegistered) {
       responseListenerRegistered = true;
       Notifications.addNotificationResponseReceivedListener(async (response) => {
-        const actionIdentifier = response.actionIdentifier;
-        const data = response.notification.request.content.data as {
+        const { actionIdentifier, notification } = response;
+        const data = notification.request.content.data as {
           reminderId?: string;
-          taskId?: string | null;
+          taskId?: string;
         };
 
-        if (!data?.reminderId) return;
-
-        let uid: string;
-        try { uid = getUID(); } catch { return; }
-
-        if (actionIdentifier === 'DONE' && data.taskId) {
-          // Mark task completed in Firestore
+        if (actionIdentifier === 'DONE' && data?.taskId) {
           await personalOS.toggleTaskCompletion(data.taskId, true);
-        } else if (actionIdentifier === 'SNOOZE') {
-          // Schedule snooze notification in 60 minutes
-          const content = response.notification.request.content;
+        } else if (actionIdentifier === 'SNOOZE_60' && data?.reminderId) {
+          const snoozeDate = new Date(Date.now() + 60 * 60 * 1000);
           await Notifications.scheduleNotificationAsync({
             content: {
-              title: content.title || 'Snoozed Reminder',
-              body: content.body || '',
+              title: `[Snoozed] ${notification.request.content.title}`,
+              body: notification.request.content.body,
+              sound: true,
               categoryIdentifier: REMINDER_CATEGORY_ID,
-              data: content.data,
+              data,
             },
             trigger: {
-              type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-              seconds: 3600, // 1 hour
+              type: Notifications.SchedulableTriggerInputTypes.DATE,
+              date: snoozeDate,
               channelId: REMINDER_CHANNEL_ID,
             },
           });
@@ -79,14 +69,12 @@ export async function initReminderNotificationService() {
       });
     }
   } catch (err) {
-    console.warn('Failed to initialize reminder notification service:', err);
+    console.warn('Notification init error:', err);
   }
 }
 
-/**
- * Checks and requests Local Notification permissions.
- */
 export async function checkReminderPermissions(): Promise<{ granted: boolean; canRequest: boolean }> {
+  if (Platform.OS === 'web') return { granted: false, canRequest: false };
   try {
     const settings = await Notifications.getPermissionsAsync();
     let granted =
@@ -106,13 +94,14 @@ export async function checkReminderPermissions(): Promise<{ granted: boolean; ca
 }
 
 /**
- * Schedules rolling window local notifications adhering to iOS <= 64 pending limit.
- * Cancels outdated reminder notifications and schedules only nearest valid instances.
+ * Schedules rolling window local notifications.
+ * Automatically schedules default 9:00 PM "Finish today's tasks (N left)" reminder.
  */
 export async function syncLocalScheduledReminders(
   reminders: Reminder[],
   currentLog: DailyLog | null,
-  quietHours?: QuietHours
+  quietHours?: QuietHours,
+  remainingTasksCount: number = 0
 ): Promise<void> {
   const { granted } = await checkReminderPermissions();
   if (!granted) return;
@@ -121,7 +110,7 @@ export async function syncLocalScheduledReminders(
   try {
     const scheduled = await Notifications.getAllScheduledNotificationsAsync();
     for (const notif of scheduled) {
-      if (notif.content.data?.reminderId) {
+      if (notif.content.data?.reminderId || notif.content.data?.isDefaultEveningReminder) {
         await Notifications.cancelScheduledNotificationAsync(notif.identifier);
       }
     }
@@ -129,14 +118,14 @@ export async function syncLocalScheduledReminders(
     console.warn('Cancel notifications warning:', e);
   }
 
-  // Calculate rolling window instances (top 50 nearest)
+  // 1. Calculate rolling window instances (top 50 nearest)
   const instances = calculateRollingWindowSchedule(reminders, quietHours, 50);
 
   for (const instance of instances) {
     const rem = instance.reminder;
 
     // Skip if linked task is already completed today
-    if (rem.taskId && currentLog?.completedTaskIds?.includes(rem.taskId)) {
+    if (rem.taskId && currentLog?.done?.[rem.taskId]) {
       continue;
     }
 
@@ -161,5 +150,51 @@ export async function syncLocalScheduledReminders(
     } catch (schedErr) {
       console.warn(`Failed to schedule notification for ${rem.title}:`, schedErr);
     }
+  }
+
+  // 2. Schedule default 9:00 PM reminder: "Finish today's tasks (N left)"
+  try {
+    const now = new Date();
+    const tonight9pm = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 21, 0, 0, 0);
+
+    const targetDate = now.getTime() < tonight9pm.getTime()
+      ? tonight9pm
+      : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 21, 0, 0, 0);
+
+    const message = remainingTasksCount > 0
+      ? `Finish today's tasks (${remainingTasksCount} left)!`
+      : 'All tasks complete for today 🎉 Great job staying on pace!';
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: '🌙 9:00 PM Daily Check-in',
+        body: message,
+        sound: true,
+        data: { isDefaultEveningReminder: true },
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: targetDate,
+        channelId: REMINDER_CHANNEL_ID,
+      },
+    });
+  } catch (eveningErr) {
+    console.warn('Failed to schedule 9:00 PM reminder:', eveningErr);
+  }
+}
+
+export async function sendImmediateTestNotification(reminder: Reminder): Promise<void> {
+  try {
+    if (Platform.OS === 'web') return;
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `${reminder.emoji ? reminder.emoji + ' ' : ''}${reminder.title}`,
+        body: reminder.body || 'Time to complete your task!',
+        sound: true,
+      },
+      trigger: null,
+    });
+  } catch (err) {
+    console.warn('Failed to send test notification:', err);
   }
 }

@@ -4,6 +4,7 @@ export const colors = {
   primaryLight: '#E8F0FF',
   primaryDark: '#0052CC',
   primarySoft: '#E8F0FF',
+  secondary: '#64748B',
   error: '#EF4444',
 
   // ─── Surfaces & Backgrounds ───────────────────────────────
@@ -11,12 +12,14 @@ export const colors = {
   surface: '#FFFFFF',
   surfaceElevated: '#FFFFFF',
   surfaceSecondary: '#F0F2F8',
+  cardBackground: '#FFFFFF',
 
   // ─── Text ─────────────────────────────────────────────────
   text: '#0F172A',
   textPrimary: '#0F172A',
   textSecondary: '#64748B',
   textTertiary: '#94A3B8',
+  textMuted: '#94A3B8',
   textInverse: '#FFFFFF',
 
   // ─── Borders & Dividers ───────────────────────────────────

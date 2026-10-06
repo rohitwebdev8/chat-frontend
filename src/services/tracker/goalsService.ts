@@ -9,114 +9,60 @@ export const DEFAULT_GOAL_TEMPLATES: Omit<Goal, 'id' | 'createdAt' | 'updatedAt'
   {
     title: 'Reach Target Weight 70 kg',
     category: 'Health',
-    type: 'target',
-    horizon: 'monthly',
+    type: 'reach_number',
     startValue: 78.0,
-    currentValue: 75.0,
     targetValue: 70.0,
     unit: 'kg',
     startDate: new Date().toISOString().split('T')[0],
-    deadline: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    linkedMetric: 'weight',
-    priority: 'high',
+    endDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     status: 'active',
-    visionStatement: 'Achieve a lean, energetic, and healthy physical body.',
-    whyItMatters: 'Improves daily energy, fitness performance, and overall long-term health.',
   },
   {
     title: 'Daily Calorie Limit 1,800 kcal',
     category: 'Diet',
-    type: 'recurring',
-    horizon: 'daily',
+    type: 'limit',
     startValue: 0,
-    currentValue: 0,
     targetValue: 1800,
     unit: 'kcal',
     startDate: new Date().toISOString().split('T')[0],
-    linkedMetric: 'calories',
-    priority: 'high',
-    status: 'active',
-  },
-  {
-    title: 'Daily Protein Target 140g',
-    category: 'Diet',
-    type: 'recurring',
-    horizon: 'daily',
-    startValue: 0,
-    currentValue: 0,
-    targetValue: 140,
-    unit: 'g',
-    startDate: new Date().toISOString().split('T')[0],
-    linkedMetric: 'protein',
-    priority: 'medium',
+    endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     status: 'active',
   },
   {
     title: 'Daily 10,000 Step Goal',
     category: 'Fitness',
-    type: 'recurring',
-    horizon: 'daily',
+    type: 'total',
     startValue: 0,
-    currentValue: 0,
-    targetValue: 10000,
+    targetValue: 300000,
     unit: 'steps',
     startDate: new Date().toISOString().split('T')[0],
-    linkedMetric: 'steps',
-    priority: 'high',
+    endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     status: 'active',
   },
   {
     title: 'Solve 100 DSA Problems',
     category: 'Study',
-    type: 'cumulative',
-    horizon: 'monthly',
+    type: 'total',
     startValue: 0,
-    currentValue: 15,
     targetValue: 100,
     unit: 'questions',
     startDate: new Date().toISOString().split('T')[0],
-    deadline: new Date(Date.now() + 45 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    linkedMetric: 'dsaQuestions',
-    priority: 'high',
-    status: 'active',
-    visionStatement: 'Master Data Structures & Algorithms for senior coding interviews.',
-  },
-  {
-    title: 'Code 50 Hours React & Node.js',
-    category: 'Study',
-    type: 'cumulative',
-    horizon: 'monthly',
-    startValue: 0,
-    currentValue: 12,
-    targetValue: 50,
-    unit: 'hours',
-    startDate: new Date().toISOString().split('T')[0],
-    deadline: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    linkedMetric: 'reactHours',
-    priority: 'high',
+    endDate: new Date(Date.now() + 45 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     status: 'active',
   },
   {
-    title: 'Submit 50 Job Applications',
+    title: 'Submit 500 Job Applications',
     category: 'Career',
-    type: 'cumulative',
-    horizon: 'monthly',
+    type: 'total',
     startValue: 0,
-    currentValue: 10,
-    targetValue: 50,
+    targetValue: 500,
     unit: 'applications',
     startDate: new Date().toISOString().split('T')[0],
-    deadline: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    linkedMetric: 'jobApplications',
-    priority: 'high',
+    endDate: new Date(Date.now() + 20 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     status: 'active',
-    visionStatement: 'Land a high-impact Software Engineer role.',
   },
 ];
 
-/**
- * Load goals from Firestore and AsyncStorage fallback.
- */
 export async function loadGoals(userName: string = 'User'): Promise<Goal[]> {
   let localGoals: Goal[] = [];
 
@@ -141,7 +87,6 @@ export async function loadGoals(userName: string = 'User'): Promise<Goal[]> {
     });
 
     if (remoteGoals.length === 0 && localGoals.length === 0) {
-      // Pre-populate initial goal templates for first-time user
       const initialGoals: Goal[] = DEFAULT_GOAL_TEMPLATES.map((tmpl, idx) => ({
         ...tmpl,
         id: `goal-${idx + 1}-${Date.now()}`,
@@ -161,7 +106,6 @@ export async function loadGoals(userName: string = 'User'): Promise<Goal[]> {
     await AsyncStorage.setItem(GOALS_STORAGE_KEY, JSON.stringify(finalGoals));
     return finalGoals;
   } catch (fsErr) {
-    console.warn('Firestore goals fetch fallback to local cache:', fsErr);
     if (localGoals.length === 0) {
       const initialGoals: Goal[] = DEFAULT_GOAL_TEMPLATES.map((tmpl, idx) => ({
         ...tmpl,
@@ -176,9 +120,6 @@ export async function loadGoals(userName: string = 'User'): Promise<Goal[]> {
   }
 }
 
-/**
- * Save array of goals to Firestore and AsyncStorage.
- */
 export async function saveAllGoals(goals: Goal[], userName: string = 'User'): Promise<Goal[]> {
   try {
     await AsyncStorage.setItem(GOALS_STORAGE_KEY, JSON.stringify(goals));
@@ -198,9 +139,6 @@ export async function saveAllGoals(goals: Goal[], userName: string = 'User'): Pr
   }
 }
 
-/**
- * Save or update single goal.
- */
 export async function saveSingleGoal(goal: Goal, userName: string = 'User'): Promise<Goal[]> {
   const currentGoals = await loadGoals(userName);
   const updatedTime = new Date().toISOString();
@@ -216,9 +154,6 @@ export async function saveSingleGoal(goal: Goal, userName: string = 'User'): Pro
   return saveAllGoals(currentGoals, userName);
 }
 
-/**
- * Delete goal by ID.
- */
 export async function deleteGoal(goalId: string, userName: string = 'User'): Promise<Goal[]> {
   const currentGoals = await loadGoals(userName);
   const filtered = currentGoals.filter((g) => g.id !== goalId);
